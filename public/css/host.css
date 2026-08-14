@@ -60,40 +60,120 @@ body {
   letter-spacing: 1px;
 }
 
+.lobby-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.lobby-meta.hidden,
+.hidden {
+  display: none;
+}
+
+.victory {
+  text-align: center;
+  margin: 8px 0 4px;
+}
+
+.victory-title {
+  font-size: 5vw;
+  font-weight: 900;
+  letter-spacing: 8px;
+  color: var(--color-gold);
+  text-shadow: var(--glow-gold);
+}
+
+.victory-sub {
+  font-size: 1.4vw;
+  color: var(--color-text-muted);
+  letter-spacing: 4px;
+  margin-top: 6px;
+}
+
 .players {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: 28px;
   justify-content: center;
-  max-width: 80%;
-  margin: 30px 0;
+  max-width: 86%;
+  margin: 28px 0;
 }
 
-.player {
-  padding: 12px 24px;
-  border-radius: var(--radius-md);
-  background: var(--color-bg-surface);
-  font-size: 1.5vw;
-  font-weight: 700;
-  border: 2px solid var(--color-border);
-  transition: all 0.2s ease-out;
+.orb {
+  --orb: var(--color-accent);
+  width: 12vw;
+  height: 12vw;
+  min-width: 92px;
+  min-height: 92px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.55), transparent 42%),
+    var(--orb);
+  border: 3px solid var(--orb);
+  box-shadow: 0 0 18px var(--orb), 0 0 40px var(--orb);
+  color: #041016;
+  transition: transform 0.08s ease-out, opacity 0.2s, filter 0.2s, box-shadow 0.08s;
+}
+
+.orb-name {
+  font-size: 1.15vw;
+  font-weight: 900;
+  letter-spacing: 1px;
+  max-width: 80%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.orb-wins {
+  font-size: 0.75vw;
+  opacity: 0.8;
   letter-spacing: 1px;
 }
 
-.player.alive {
-  border-color: var(--color-alive);
-  color: var(--color-alive);
-  box-shadow: inset 0 0 10px rgba(57, 255, 20, 0.15), var(--glow-green);
-  text-shadow: 0 0 5px var(--color-alive);
+.orb.ready {
+  box-shadow: 0 0 8px #fff, 0 0 28px var(--orb);
+  outline: 3px solid #fff;
+  outline-offset: 4px;
 }
 
-.player.dead {
-  border-color: rgba(255, 0, 60, 0.3);
-  color: var(--color-danger);
-  opacity: 0.5;
-  text-decoration: line-through;
-  text-decoration-thickness: 3px;
-  box-shadow: inset 0 0 10px rgba(255, 0, 60, 0.1);
+.orb.ghost {
+  opacity: 0.38;
+  filter: grayscale(0.35) brightness(0.7);
+  box-shadow: none;
+}
+
+.orb.winner {
+  --orb: var(--color-gold);
+  transform: scale(1.12);
+}
+
+.orb.team-red {
+  outline: 4px solid #ff003c;
+  outline-offset: 6px;
+}
+
+.orb.team-blue {
+  outline: 4px solid #3b82f6;
+  outline-offset: 6px;
+}
+
+body.beat .orb.alive {
+  transform: scale(1.1);
+  box-shadow: 0 0 28px var(--orb), 0 0 60px var(--orb);
+}
+
+body.beat {
+  background-size: 36px 36px;
+}
+
+body.sudden .status {
+  color: var(--color-gold);
+  text-shadow: var(--glow-gold);
 }
 
 .actions {

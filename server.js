@@ -7,7 +7,6 @@ const os = require('os');
 
 const PORT = process.env.PORT || 3000;
 
-// --- Tempo/difficulty stages: bpm climbs, base threshold tightens ---
 const STAGES = [
   { bpm: 100, threshold: 5.5 },
   { bpm: 115, threshold: 4.0 },
@@ -15,28 +14,41 @@ const STAGES = [
   { bpm: 145, threshold: 2.2 },
   { bpm: 160, threshold: 1.6 },
 ];
-const STAGE_DURATION_MS = 20000;   // how long each tempo stage lasts
-const FREEZE_WINDOW_MS = 1200;     // duration of each "freeze" beat
-const FREEZE_SUBCYCLE_MS = 10000;  // a freeze happens every N ms within a stage
-const FREEZE_THRESHOLD = 0.9;      // almost any twitch is out during freeze
-const GRACE_MS = 2000;             // immunity window after game start
+const STAGE_DURATION_MS = 20000;
+const FREEZE_WINDOW_MS = 1200;
+const FREEZE_SUBCYCLE_MS = 10000;
+const FREEZE_THRESHOLD = 0.9;
+const GRACE_MS = 2000;
 const COUNTDOWN_MS = 3000;
+const CLASH_WINDOW_MS = 80;
+const ORB_COLORS = [
+  '#00f3ff', '#39ff14', '#ff2bd6', '#ff9f1c',
+  '#3b82f6', '#facc15', '#ff003c', '#bc13fe',
+];
 
-function computeGameplay(elapsedMs) {
-  const stageIdx = Math.min(Math.floor(elapsedMs / STAGE_DURATION_MS), STAGES.length - 1);
+function computeGameplay(elapsedMs, suddenDeath) {
+  let stageIdx = Math.min(Math.floor(elapsedMs / STAGE_DURATION_MS), STAGES.length - 1);
+  let freezeEvery = FREEZE_SUBCYCLE_MS;
+  let freezeWin = FREEZE_WINDOW_MS;
+  if (suddenDeath) {
+    stageIdx = STAGES.length - 1;
+    freezeEvery = 6000;
+    freezeWin = 1500;
+  }
   const stage = STAGES[stageIdx];
-  const subElapsed = elapsedMs % FREEZE_SUBCYCLE_MS;
-  const freezeActive = subElapsed >= (FREEZE_SUBCYCLE_MS - FREEZE_WINDOW_MS);
+  const subElapsed = elapsedMs % freezeEvery;
+  const freezeActive = subElapsed >= (freezeEvery - freezeWin);
   return {
     bpm: stage.bpm,
-    threshold: freezeActive ? FREEZE_THRESHOLD : stage.threshold,
+    threshold: freezeActive ? (suddenDeath ? 0.7 : FREEZE_THRESHOLD) : stage.threshold,
     freezeActive,
-    stageIdx
+    stageIdx,
+    suddenDeath: !!suddenDeath
   };
 }
 
 function makeRoomCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous chars
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code;
   do {
     code = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
@@ -44,48 +56,212 @@ function makeRoomCode() {
   return code;
 }
 
-// --- Room state ---
-// rooms[code] = { players: {id: {name, alive, ws}}, sockets: Set<ws>,
-//                  gameState, gameStartedAt, tempoTimer }
+function assignColor(room) {
+  const used = new Set(Object.values(room.players).map(p => p.color));
+  return ORB_COLORS.find(c => !used.has(c)) || ORB_COLORS[Object.keys(room.players).length % ORB_COLORS.length];
+}
+
+function assignTeam(room) {
+  if (!room.teamsEnabled) return null;
+  const red = Object.values(room.players).filter(p => p.team === 'red').length;
+  const blue = Object.values(room.players).filter(p => p.team === 'blue').length;
+  return red <= blue ? 'red' : 'blue';
+}
+
+function rebalanceTeams(room) {
+  const list = Object.values(room.players);
+  list.forEach((p, i) => {
+    p.team = room.teamsEnabled ? (i % 2 === 0 ? 'red' : 'blue') : null;
+  });
+}
+
+function serializePlayer(id, p) {
+  return {
+    id,
+    name: p.name,
+    alive: p.alive,
+    ghost: !!p.ghost,
+    color: p.color,
+    team: p.team,
+    wins: p.wins || 0,
+    ready: !!p.ready
+  };
+}
+
 let rooms = {};
+
+function broadcast(code, payload) {
+  const room = rooms[code];
+  if (!room) return;
+  const raw = JSON.stringify(payload);
+  for (const ws of room.sockets) {
+    if (ws.readyState === 1) ws.send(raw);
+  }
+}
 
 function broadcastRoom(code) {
   const room = rooms[code];
   if (!room) return;
-  const payload = JSON.stringify({
+  broadcast(code, {
     type: 'state',
     gameState: room.gameState,
-    players: Object.entries(room.players).map(([id, p]) => ({
-      id, name: p.name, alive: p.alive
-    }))
+    teamsEnabled: room.teamsEnabled,
+    suddenDeath: room.suddenDeath,
+    winner: room.winner,
+    winnerTeam: room.winnerTeam,
+    ghostsWin: room.ghostsWin,
+    players: Object.entries(room.players).map(([id, p]) => serializePlayer(id, p))
   });
-  for (const ws of room.sockets) {
-    if (ws.readyState === 1) ws.send(payload);
+}
+
+function livingEntries(room) {
+  return Object.entries(room.players).filter(([, p]) => p.alive);
+}
+
+function finishVictory(code) {
+  const room = rooms[code];
+  if (!room || room.gameState !== 'live') return;
+  room.gameState = 'victory';
+  room.suddenDeath = false;
+  if (room.tempoTimer) clearInterval(room.tempoTimer);
+  if (room.clashTimer) {
+    clearTimeout(room.clashTimer);
+    room.clashTimer = null;
+  }
+  room.spikes = [];
+  broadcastRoom(code);
+}
+
+function checkWin(code) {
+  const room = rooms[code];
+  if (!room || room.gameState !== 'live') return;
+  const all = Object.entries(room.players);
+  if (all.length < 2) return;
+  const living = livingEntries(room);
+
+  if (room.teamsEnabled) {
+    if (living.length === 0) {
+      room.ghostsWin = true;
+      room.winner = null;
+      room.winnerTeam = null;
+      finishVictory(code);
+      return;
+    }
+    const teams = new Set(living.map(([, p]) => p.team));
+    if (teams.size === 1) {
+      room.ghostsWin = false;
+      room.winnerTeam = living[0][1].team;
+      room.winner = { id: living[0][0], name: living[0][1].name, color: living[0][1].color, team: living[0][1].team };
+      living.forEach(([, p]) => { p.wins = (p.wins || 0) + 1; });
+      finishVictory(code);
+    }
+    return;
+  }
+
+  if (living.length === 0) {
+    room.ghostsWin = true;
+    room.winner = null;
+    room.winnerTeam = null;
+    finishVictory(code);
+    return;
+  }
+  if (living.length === 1) {
+    const [id, p] = living[0];
+    p.wins = (p.wins || 0) + 1;
+    room.ghostsWin = false;
+    room.winnerTeam = null;
+    room.winner = { id, name: p.name, color: p.color, team: p.team };
+    finishVictory(code);
+  }
+}
+
+function makeGhost(p) {
+  if (!p || !p.alive) return false;
+  p.alive = false;
+  p.ghost = true;
+  return true;
+}
+
+function resolveCluster(code) {
+  const room = rooms[code];
+  if (!room) return;
+  room.clashTimer = null;
+  const spikes = room.spikes;
+  room.spikes = [];
+  if (room.gameState !== 'live' || spikes.length === 0) return;
+
+  const byId = {};
+  for (const s of spikes) {
+    if (!byId[s.id] || s.mag > byId[s.id].mag) byId[s.id] = s;
+  }
+  const unique = Object.values(byId);
+  const elapsed = Date.now() - room.gameStartedAt;
+  const g = computeGameplay(elapsed, room.suddenDeath);
+  const livingSpikes = unique.filter(s => room.players[s.id]?.alive);
+
+  let ghostedIds = [];
+  let clash = false;
+
+  if (unique.length >= 2 && !g.freezeActive && livingSpikes.length > 0) {
+    clash = true;
+    livingSpikes.sort((a, b) => a.mag - b.mag);
+    const loser = room.players[livingSpikes[0].id];
+    if (makeGhost(loser)) ghostedIds.push(livingSpikes[0].id);
+  } else {
+    for (const s of unique) {
+      const p = room.players[s.id];
+      if (makeGhost(p)) ghostedIds.push(s.id);
+    }
+  }
+
+  if (ghostedIds.length === 0) return;
+  broadcast(code, { type: 'fx', kind: clash ? 'clash' : 'ghosted', ids: unique.map(s => s.id), loserIds: ghostedIds });
+  broadcastRoom(code);
+  checkWin(code);
+}
+
+function noteSpike(code, playerId, magnitude) {
+  const room = rooms[code];
+  if (!room) return;
+  room.spikes.push({ id: playerId, mag: magnitude, at: Date.now() });
+  if (!room.clashTimer) {
+    room.clashTimer = setTimeout(() => resolveCluster(code), CLASH_WINDOW_MS);
   }
 }
 
 function broadcastTempo(code) {
   const room = rooms[code];
   if (!room || room.gameState !== 'live') return;
+  const aliveCount = livingEntries(room).length;
+  room.suddenDeath = aliveCount === 2 && Object.keys(room.players).length >= 2;
   const elapsed = Date.now() - room.gameStartedAt;
-  const g = computeGameplay(elapsed);
-  const payload = JSON.stringify({ type: 'tempo', ...g, elapsed });
-  for (const ws of room.sockets) {
-    if (ws.readyState === 1) ws.send(payload);
+  const g = computeGameplay(elapsed, room.suddenDeath);
+  const stepMs = 60000 / g.bpm / 2;
+  let beat = false;
+  let downbeat = false;
+  if (Date.now() >= room.nextBeatAt) {
+    beat = !g.freezeActive;
+    downbeat = beat && room.beatIndex % 2 === 0;
+    if (beat) room.beatIndex += 1;
+    room.nextBeatAt += stepMs;
+    if (room.nextBeatAt < Date.now() - stepMs) room.nextBeatAt = Date.now() + stepMs;
   }
+  broadcast(code, { type: 'tempo', ...g, elapsed, beat, downbeat });
 }
 
 function startTempoLoop(code) {
   const room = rooms[code];
   if (!room) return;
   if (room.tempoTimer) clearInterval(room.tempoTimer);
+  room.nextBeatAt = Date.now();
+  room.beatIndex = 0;
   room.tempoTimer = setInterval(() => {
     if (!rooms[code] || rooms[code].gameState !== 'live') {
       clearInterval(rooms[code]?.tempoTimer);
       return;
     }
     broadcastTempo(code);
-  }, 150);
+  }, 40);
 }
 
 function getLocalIP() {
@@ -153,17 +329,18 @@ wss.on('connection', (ws) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
-    // --- Host creates a fresh room ---
     if (msg.type === 'create_room') {
       roomCode = makeRoomCode();
       rooms[roomCode] = {
         players: {}, sockets: new Set([ws]),
-        gameState: 'lobby', gameStartedAt: 0, tempoTimer: null
+        gameState: 'lobby', gameStartedAt: 0, tempoTimer: null,
+        teamsEnabled: false, suddenDeath: false,
+        winner: null, winnerTeam: null, ghostsWin: false,
+        spikes: [], clashTimer: null, nextBeatAt: 0, beatIndex: 0
       };
       ws.send(JSON.stringify({ type: 'room_created', code: roomCode }));
     }
 
-    // --- Player joins an existing room ---
     if (msg.type === 'join') {
       const code = (msg.room || '').toUpperCase();
       const room = rooms[code];
@@ -173,38 +350,65 @@ wss.on('connection', (ws) => {
       }
       roomCode = code;
       playerId = Math.random().toString(36).slice(2, 9);
-      room.players[playerId] = { name: msg.name || `Player ${Object.keys(room.players).length + 1}`, alive: true, ws };
+      const color = assignColor(room);
+      const team = assignTeam(room);
+      room.players[playerId] = {
+        name: msg.name || `Player ${Object.keys(room.players).length + 1}`,
+        alive: true, ghost: false, ws, color, team, wins: 0, ready: false
+      };
       room.sockets.add(ws);
-      ws.send(JSON.stringify({ type: 'joined', id: playerId, code }));
+      ws.send(JSON.stringify({ type: 'joined', id: playerId, code, color, team }));
       broadcastRoom(roomCode);
     }
 
-    // --- Motion data from a player ---
+    if (msg.type === 'ready' && roomCode && playerId) {
+      const room = rooms[roomCode];
+      const p = room?.players[playerId];
+      if (!p || room.gameState !== 'lobby') return;
+      const next = !!msg.ready;
+      if (p.ready !== next) {
+        p.ready = next;
+        broadcastRoom(roomCode);
+      }
+    }
+
     if (msg.type === 'motion' && roomCode && playerId) {
       const room = rooms[roomCode];
       if (!room) return;
       const p = room.players[playerId];
-      if (room.gameState === 'live' && p && p.alive) {
-        const elapsed = Date.now() - room.gameStartedAt;
-        if (elapsed > GRACE_MS) {
-          const { threshold } = computeGameplay(elapsed);
-          if (msg.magnitude > threshold) {
-            p.alive = false;
-            broadcastRoom(roomCode);
-          }
-        }
+      if (!p || room.gameState !== 'live') return;
+      const elapsed = Date.now() - room.gameStartedAt;
+      if (elapsed <= GRACE_MS) return;
+      const g = computeGameplay(elapsed, room.suddenDeath);
+      if (msg.magnitude > g.threshold) {
+        noteSpike(roomCode, playerId, msg.magnitude);
       }
     }
 
-    // --- Host controls ---
+    if (msg.type === 'toggle_teams' && roomCode) {
+      const room = rooms[roomCode];
+      if (!room || room.gameState !== 'lobby') return;
+      room.teamsEnabled = !room.teamsEnabled;
+      rebalanceTeams(room);
+      broadcastRoom(roomCode);
+    }
+
     if (msg.type === 'start_game' && roomCode) {
       const room = rooms[roomCode];
-      if (!room) return;
+      if (!room || room.gameState !== 'lobby') return;
       room.gameState = 'countdown';
+      room.winner = null;
+      room.winnerTeam = null;
+      room.ghostsWin = false;
+      room.suddenDeath = false;
+      room.spikes = [];
       broadcastRoom(roomCode);
       setTimeout(() => {
         if (!rooms[roomCode]) return;
-        for (const p of Object.values(room.players)) p.alive = true;
+        for (const p of Object.values(room.players)) {
+          p.alive = true;
+          p.ghost = false;
+        }
         room.gameState = 'live';
         room.gameStartedAt = Date.now();
         broadcastRoom(roomCode);
@@ -216,8 +420,21 @@ wss.on('connection', (ws) => {
       const room = rooms[roomCode];
       if (!room) return;
       room.gameState = 'lobby';
+      room.suddenDeath = false;
+      room.winner = null;
+      room.winnerTeam = null;
+      room.ghostsWin = false;
+      room.spikes = [];
       if (room.tempoTimer) clearInterval(room.tempoTimer);
-      for (const p of Object.values(room.players)) p.alive = true;
+      if (room.clashTimer) {
+        clearTimeout(room.clashTimer);
+        room.clashTimer = null;
+      }
+      for (const p of Object.values(room.players)) {
+        p.alive = true;
+        p.ghost = false;
+        p.ready = false;
+      }
       broadcastRoom(roomCode);
     }
   });
@@ -229,10 +446,11 @@ wss.on('connection', (ws) => {
     if (playerId && room.players[playerId]) {
       delete room.players[playerId];
       broadcastRoom(roomCode);
+      if (room.gameState === 'live') checkWin(roomCode);
     }
-    // clean up empty rooms
     if (room.sockets.size === 0) {
       if (room.tempoTimer) clearInterval(room.tempoTimer);
+      if (room.clashTimer) clearTimeout(room.clashTimer);
       delete rooms[roomCode];
     }
   });

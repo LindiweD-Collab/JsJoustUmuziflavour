@@ -3,19 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <title>JS Joust — Host</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700;900&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/css/tokens.css" />
     <link rel="stylesheet" href="/css/host.css" />
   </head>
   <body>
     <h1 class="title">JS JOUST</h1>
-    <div id="code" class="room-code">----</div>
-    <img id="qr" class="qr" width="180" height="180" alt="Join QR code" />
+    <div id="lobbyMeta" class="lobby-meta">
+      <div id="code" class="room-code">----</div>
+      <img id="qr" class="qr" width="180" height="180" alt="Join QR code" />
+    </div>
+    <div id="victory" class="victory hidden">
+      <div id="victoryTitle" class="victory-title"></div>
+      <div id="victorySub" class="victory-sub"></div>
+    </div>
     <div id="status" class="status">Scan to join</div>
     <div id="tempoInfo" class="tempo"></div>
     <div id="players" class="players"></div>
     <div class="actions">
-      <button class="btn" onclick="startGame()">Start Game</button>
-      <button class="btn btn-secondary" onclick="resetGame()">Reset</button>
+      <button class="btn" id="startBtn" onclick="startGame()">Start Game</button>
+      <button class="btn btn-secondary" id="teamsBtn" onclick="toggleTeams()">Teams: Off</button>
+      <button class="btn btn-secondary" id="resetBtn" onclick="resetGame()">Play Again</button>
     </div>
 
     <script>
@@ -27,6 +36,15 @@
       const codeEl = document.getElementById("code");
       const qrEl = document.getElementById("qr");
       let roomCode = null;
+      let lastGameState = "lobby";
+      let beatFlash = null;
+      const lobbyMeta = document.getElementById("lobbyMeta");
+      const victoryEl = document.getElementById("victory");
+      const victoryTitle = document.getElementById("victoryTitle");
+      const victorySub = document.getElementById("victorySub");
+      const teamsBtn = document.getElementById("teamsBtn");
+      const startBtn = document.getElementById("startBtn");
+      const resetBtn = document.getElementById("resetBtn");
 
       // --- Audio setup (Web Audio API, no external files needed) ---
       let actx = null;
@@ -238,19 +256,37 @@
         if (stageIdx >= 4 && !downbeat) playHat(0.07);
       }
 
-      function maybeTickBeat(bpm, freezeActive, stageIdx) {
+      function playClashSting() {
         if (!actx) return;
-        currentBpm = bpm;
-        currentStage = stageIdx;
-        updatePad(stageIdx, freezeActive);
-        if (freezeActive) return;
-        const stepMs = 60000 / bpm / 2;
-        const now = performance.now();
-        if (now - lastStepTime >= stepMs) {
-          lastStepTime = now;
-          playStep(stepCount, stageIdx);
-          stepCount += 1;
-        }
+        const t = actx.currentTime;
+        [330, 392].forEach((freq, i) => {
+          const osc = actx.createOscillator();
+          const g = actx.createGain();
+          osc.type = "square";
+          osc.frequency.value = freq;
+          g.gain.setValueAtTime(0.12, t + i * 0.04);
+          g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+          osc.connect(g).connect(master);
+          osc.start(t);
+          osc.stop(t + 0.2);
+        });
+      }
+
+      function playVictoryFanfare() {
+        ensureAudio();
+        [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+          const t = actx.currentTime + i * 0.13;
+          const osc = actx.createOscillator();
+          const g = actx.createGain();
+          osc.type = "triangle";
+          osc.frequency.value = freq;
+          g.gain.setValueAtTime(0.001, t);
+          g.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+          osc.connect(g).connect(master);
+          osc.start(t);
+          osc.stop(t + 0.48);
+        });
       }
 
       ws.onopen = () => ws.send(JSON.stringify({ type: "create_room" }));
@@ -263,8 +299,15 @@
           qrEl.src = `/qr?room=${roomCode}`;
         }
         if (msg.type === "state") render(msg);
+        if (msg.type === "fx" && msg.kind === "clash") playClashSting();
         if (msg.type === "tempo") {
-          tempoEl.textContent = `${msg.bpm} BPM — stage ${msg.stageIdx + 1}`;
+          currentBpm = msg.bpm;
+          currentStage = msg.stageIdx;
+          if (actx) updatePad(msg.stageIdx, msg.freezeActive);
+          tempoEl.textContent = msg.suddenDeath
+            ? `${msg.bpm} BPM — SUDDEN DEATH`
+            : `${msg.bpm} BPM — stage ${msg.stageIdx + 1}`;
+          document.body.classList.toggle("sudden", !!msg.suddenDeath);
           if (msg.freezeActive && !wasFreezing) {
             playFreezeSting();
             document.body.classList.add("freeze");
@@ -274,30 +317,76 @@
             document.body.classList.remove("freeze");
           }
           wasFreezing = msg.freezeActive;
-          maybeTickBeat(msg.bpm, msg.freezeActive, msg.stageIdx);
+          if (msg.beat && actx && !msg.freezeActive) {
+            playStep(stepCount, msg.stageIdx);
+            stepCount += 1;
+            document.body.classList.add("beat");
+            clearTimeout(beatFlash);
+            beatFlash = setTimeout(() => document.body.classList.remove("beat"), 90);
+          }
         }
       };
 
       function render(msg) {
+        const readyCount = msg.players.filter((p) => p.ready).length;
         playersEl.innerHTML = msg.players
-          .map(
-            (p) =>
-              `<div class="player ${p.alive ? "alive" : "dead"}">${p.name}</div>`,
-          )
+          .map((p) => {
+            const state = p.alive ? "alive" : "ghost";
+            const ready = p.ready && msg.gameState === "lobby" ? "ready" : "";
+            const team = p.team ? `team-${p.team}` : "";
+            const win = msg.winner && msg.winner.id === p.id && msg.gameState === "victory" ? "winner" : "";
+            return `<div class="orb ${state} ${ready} ${team} ${win}" style="--orb:${p.color}">
+              <span class="orb-name">${p.name}</span>
+              <span class="orb-wins">${p.wins || 0} win${p.wins === 1 ? "" : "s"}</span>
+            </div>`;
+          })
           .join("");
 
-        const aliveCount = msg.players.filter((p) => p.alive).length;
-        if (msg.gameState === "lobby") {
-          statusEl.textContent = "Scan to join";
-          tempoEl.textContent = "";
-        } else if (msg.gameState === "countdown")
-          statusEl.textContent = "Starting...";
-        else if (msg.gameState === "live" && !wasFreezing) {
-          statusEl.textContent =
-            aliveCount <= 1 && msg.players.length > 1
-              ? `${msg.players.find((p) => p.alive)?.name || "Nobody"} WINS!`
-              : `${aliveCount} player(s) still standing`;
+        teamsBtn.textContent = msg.teamsEnabled ? "Teams: On" : "Teams: Off";
+        lobbyMeta.classList.toggle("hidden", msg.gameState !== "lobby");
+        teamsBtn.classList.toggle("hidden", msg.gameState !== "lobby");
+        startBtn.classList.toggle("hidden", msg.gameState !== "lobby");
+        victoryEl.classList.toggle("hidden", msg.gameState !== "victory");
+
+        if (msg.gameState === "victory" && lastGameState !== "victory") {
+          stopPad();
+          playVictoryFanfare();
         }
+        lastGameState = msg.gameState;
+        document.body.dataset.phase = msg.gameState;
+
+        if (msg.gameState === "lobby") {
+          const n = msg.players.length;
+          statusEl.textContent = n
+            ? `${readyCount}/${n} ready — hold phones still and upright`
+            : "Scan to join";
+          tempoEl.textContent = "";
+          document.body.classList.remove("freeze", "sudden", "beat");
+        } else if (msg.gameState === "countdown") {
+          statusEl.textContent = "Raise your swords";
+        } else if (msg.gameState === "victory") {
+          if (msg.ghostsWin) {
+            victoryTitle.textContent = "GHOSTS WIN";
+            victorySub.textContent = "The living fell";
+          } else if (msg.winnerTeam) {
+            victoryTitle.textContent = `${msg.winnerTeam} team wins`;
+            victorySub.textContent = "Play again?";
+          } else {
+            victoryTitle.textContent = `${msg.winner?.name || "Nobody"} wins`;
+            victorySub.textContent = "Champion of the room";
+          }
+          statusEl.textContent = "";
+          tempoEl.textContent = "";
+        } else if (msg.gameState === "live" && !wasFreezing) {
+          const aliveCount = msg.players.filter((p) => p.alive).length;
+          statusEl.textContent = msg.suddenDeath
+            ? "Sudden death"
+            : `${aliveCount} standing`;
+        }
+      }
+
+      function toggleTeams() {
+        ws.send(JSON.stringify({ type: "toggle_teams" }));
       }
 
       function startGame() {
@@ -315,11 +404,13 @@
         stopPad();
         stepCount = 0;
         lastStepTime = 0;
-        if (master) {
+        if (master && actx) {
           master.gain.cancelScheduledValues(actx.currentTime);
           master.gain.value = 0.42;
         }
+        document.body.classList.remove("sudden", "beat");
       }
     </script>
   </body>
 </html>
+

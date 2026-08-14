@@ -17,13 +17,14 @@ body {
 }
 
 .screen {
+  --orb-color: var(--color-accent);
   width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  transition: background 0.1s, box-shadow 0.1s;
+  transition: background 0.12s, box-shadow 0.12s, filter 0.08s;
 }
 
 .hidden {
@@ -97,22 +98,58 @@ body {
   background: var(--color-bg-controller);
 }
 
-.screen.live {
-  background: var(--color-bg-live);
-  box-shadow: inset 0 0 50px rgba(57, 255, 20, 0.1);
+.screen.lobby.ready {
+  background: var(--orb-color);
+  box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.25);
 }
-.screen.live .status {
-  color: var(--color-alive);
-  text-shadow: var(--glow-green);
+.screen.lobby.ready .status,
+.screen.lobby.ready .sub {
+  color: #041016;
+  text-shadow: none;
+}
+
+.screen.live {
+  background: var(--orb-color);
+  box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.2);
+}
+.screen.live .status,
+.screen.live .sub {
+  color: #041016;
+  text-shadow: none;
 }
 
 .screen.dead {
-  background: var(--color-bg-dead);
+  background: #140008;
   box-shadow: inset 0 0 50px rgba(255, 0, 60, 0.2);
 }
 .screen.dead .status {
   color: var(--color-danger);
   text-shadow: var(--glow-red);
+}
+
+.screen.ghost {
+  background: #07070c;
+  box-shadow: inset 0 0 90px var(--orb-color);
+  opacity: 0.92;
+}
+.screen.ghost .status,
+.screen.ghost .sub {
+  color: var(--orb-color);
+  text-shadow: 0 0 12px var(--orb-color);
+}
+
+.screen.winner {
+  background: var(--color-gold);
+  box-shadow: inset 0 0 90px rgba(255, 255, 255, 0.35);
+}
+.screen.winner .status,
+.screen.winner .sub {
+  color: #1a1400;
+  text-shadow: none;
+}
+
+.screen.beat {
+  filter: brightness(1.35);
 }
 
 .screen.freeze {

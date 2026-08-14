@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>JS Joust — Controller</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@600;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/tokens.css">
 <link rel="stylesheet" href="/css/controller.css">
 </head>
@@ -18,8 +20,8 @@
     <div id="error" class="error"></div>
   </div>
   <div id="gameBox" class="game hidden">
-    <div id="status" class="status">WAITING</div>
-    <div id="sub" class="sub"></div>
+    <div id="status" class="status">HOLD STILL</div>
+    <div id="sub" class="sub">Calibrating your phone</div>
   </div>
 </div>
 
@@ -31,15 +33,29 @@ const statusEl = document.getElementById('status');
 const subEl = document.getElementById('sub');
 const errorEl = document.getElementById('error');
 let myId = null;
+let myColor = '#39ff14';
+let myTeam = null;
 let alive = true;
+let ghost = false;
+let ready = false;
+let isWinner = false;
+let ghostsWin = false;
 let gameState = 'lobby';
 let freezeActive = false;
+let suddenDeath = false;
+let lastGameState = 'lobby';
+let lastReadySent = null;
+let beatFlash = null;
+let wasAlive = true;
 
-// pre-fill room code from QR link, and hide the field if present
 const params = new URLSearchParams(location.search);
 const prefilledRoom = params.get('room');
 if (prefilledRoom) {
   document.getElementById('roomRow').classList.add('hidden');
+}
+
+function buzz(pattern) {
+  if (navigator.vibrate) navigator.vibrate(pattern);
 }
 
 function join() {
@@ -75,9 +91,23 @@ let gravX = 0;
 let gravY = 0;
 let gravZ = 0;
 const GRAVITY_ALPHA = 0.85;
+let calSamples = [];
+let restBaseline = 0.35;
+let calibrated = false;
+let lastGrav = { x: 0, y: 9.8, z: 0 };
 
 function vectorMag(v) {
   return Math.sqrt((v.x || 0) ** 2 + (v.y || 0) ** 2 + (v.z || 0) ** 2);
+}
+
+function isUpright() {
+  return Math.abs(lastGrav.y) > 6.5;
+}
+
+function sendReady(next) {
+  if (lastReadySent === next || ws.readyState !== WebSocket.OPEN) return;
+  lastReadySent = next;
+  ws.send(JSON.stringify({ type: 'ready', ready: next }));
 }
 
 function onMotion(e) {
@@ -86,21 +116,38 @@ function onMotion(e) {
   let magUser = 0;
   let magLinear = 0;
 
-  if (user && user.x != null) magUser = vectorMag(user);
-
   if (raw && raw.x != null) {
-    const ax = raw.x || 0;
-    const ay = raw.y || 0;
-    const az = raw.z || 0;
+    lastGrav = { x: raw.x || 0, y: raw.y || 0, z: raw.z || 0 };
+    const ax = lastGrav.x;
+    const ay = lastGrav.y;
+    const az = lastGrav.z;
     gravX = GRAVITY_ALPHA * gravX + (1 - GRAVITY_ALPHA) * ax;
     gravY = GRAVITY_ALPHA * gravY + (1 - GRAVITY_ALPHA) * ay;
     gravZ = GRAVITY_ALPHA * gravZ + (1 - GRAVITY_ALPHA) * az;
     magLinear = Math.sqrt((ax - gravX) ** 2 + (ay - gravY) ** 2 + (az - gravZ) ** 2);
   }
+  if (user && user.x != null) magUser = vectorMag(user);
 
-  const magnitude = Math.max(magUser, magLinear);
-  if (!magnitude || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ type: 'motion', magnitude }));
+  const rawMag = Math.max(magUser, magLinear);
+  if (!calibrated) {
+    calSamples.push(rawMag);
+    if (calSamples.length >= 45) {
+      const sorted = calSamples.slice().sort((a, b) => a - b);
+      restBaseline = sorted[Math.floor(sorted.length * 0.8)] + 0.15;
+      calibrated = true;
+      render();
+    }
+    return;
+  }
+
+  const magnitude = Math.max(0, rawMag - restBaseline);
+  const still = magnitude < 0.9 && isUpright();
+  if (gameState === 'lobby') sendReady(still);
+
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (gameState === 'live') {
+    ws.send(JSON.stringify({ type: 'motion', magnitude }));
+  }
 }
 
 ws.onmessage = (event) => {
@@ -110,45 +157,109 @@ ws.onmessage = (event) => {
   }
   if (msg.type === 'joined') {
     myId = msg.id;
+    myColor = msg.color || myColor;
+    myTeam = msg.team;
+    screenEl.style.setProperty('--orb-color', myColor);
     document.getElementById('joinBox').classList.add('hidden');
     document.getElementById('gameBox').classList.remove('hidden');
+    render();
   }
   if (msg.type === 'state') {
     gameState = msg.gameState;
+    ghostsWin = !!msg.ghostsWin;
+    suddenDeath = !!msg.suddenDeath;
     const me = msg.players.find(p => p.id === myId);
-    if (me) alive = me.alive;
+    if (me) {
+      alive = me.alive;
+      ghost = !!me.ghost;
+      ready = !!me.ready;
+      myColor = me.color || myColor;
+      myTeam = me.team;
+      screenEl.style.setProperty('--orb-color', myColor);
+      isWinner = !!(msg.winner && msg.winner.id === myId) ||
+        !!(msg.winnerTeam && me.team === msg.winnerTeam && me.alive);
+      if (wasAlive && !alive) buzz([80, 40, 80, 40, 220]);
+      wasAlive = alive;
+    }
+    if (gameState !== 'lobby') {
+      lastReadySent = null;
+    }
     render();
   }
   if (msg.type === 'tempo') {
     freezeActive = msg.freezeActive;
+    suddenDeath = !!msg.suddenDeath;
+    if (msg.freezeActive && !screenEl.classList.contains('freeze')) {
+      buzz([40, 30, 80, 30, 140]);
+    }
+    if (msg.downbeat && gameState === 'live' && !msg.freezeActive) {
+      buzz(alive ? 22 : 12);
+      screenEl.classList.add('beat');
+      clearTimeout(beatFlash);
+      beatFlash = setTimeout(() => screenEl.classList.remove('beat'), 90);
+    }
     render();
+  }
+  if (msg.type === 'fx' && msg.kind === 'clash') {
+    buzz([30, 20, 70]);
   }
 };
 
 function render() {
+  screenEl.style.setProperty('--orb-color', myColor);
+  const pulsing = screenEl.classList.contains('beat');
   if (gameState === 'lobby') {
-    statusEl.textContent = 'WAITING';
-    subEl.textContent = 'Hang tight for the host to start';
-    screenEl.className = 'screen lobby';
+    if (!calibrated) {
+      statusEl.textContent = 'HOLD STILL';
+      subEl.textContent = 'Calibrating your sword';
+      screenEl.className = 'screen lobby';
+    } else if (ready) {
+      statusEl.textContent = 'READY';
+      subEl.textContent = myTeam ? `${myTeam} team` : 'Hold until the host starts';
+      screenEl.className = 'screen lobby ready';
+    } else {
+      statusEl.textContent = 'RAISE IT';
+      subEl.textContent = 'Hold still and upright';
+      screenEl.className = 'screen lobby';
+    }
   } else if (gameState === 'countdown') {
-    statusEl.textContent = 'GET READY';
+    statusEl.textContent = 'JOUST';
     subEl.textContent = '...';
-    screenEl.className = 'screen lobby';
+    screenEl.className = 'screen live';
+  } else if (gameState === 'victory') {
+    if (lastGameState !== 'victory') {
+      if ((ghostsWin && ghost) || isWinner) buzz([50, 40, 50, 40, 180]);
+    }
+    if (ghostsWin && ghost) {
+      statusEl.textContent = 'GHOSTS WIN';
+      subEl.textContent = 'The hunt is over';
+      screenEl.className = 'screen ghost winner';
+    } else if (isWinner) {
+      statusEl.textContent = 'CHAMPION';
+      subEl.textContent = 'You remain';
+      screenEl.className = 'screen winner';
+    } else {
+      statusEl.textContent = ghost ? 'GHOST' : 'OUT';
+      subEl.textContent = 'Next round incoming';
+      screenEl.className = ghost ? 'screen ghost' : 'screen dead';
+    }
   } else if (gameState === 'live') {
-    if (!alive) {
-      statusEl.textContent = 'OUT';
-      subEl.textContent = 'You moved too much';
-      screenEl.className = 'screen dead';
+    if (ghost || !alive) {
+      statusEl.textContent = 'GHOST';
+      subEl.textContent = 'Hunt the living';
+      screenEl.className = 'screen ghost';
     } else if (freezeActive) {
-      statusEl.textContent = 'FREEZE!';
-      subEl.textContent = "Don't move a muscle";
+      statusEl.textContent = 'FREEZE';
+      subEl.textContent = "Don't move";
       screenEl.className = 'screen freeze';
     } else {
-      statusEl.textContent = 'STAY STEADY';
-      subEl.textContent = 'Joust!';
+      statusEl.textContent = suddenDeath ? 'DUEL' : '';
+      subEl.textContent = suddenDeath ? 'Sudden death' : '';
       screenEl.className = 'screen live';
     }
   }
+  if (pulsing) screenEl.classList.add('beat');
+  lastGameState = gameState;
 }
 </script>
 </body>
