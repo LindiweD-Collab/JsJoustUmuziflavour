@@ -9,16 +9,16 @@ const PORT = process.env.PORT || 3000;
 
 // --- Tempo/difficulty stages: bpm climbs, base threshold tightens ---
 const STAGES = [
-  { bpm: 100, threshold: 20 },
-  { bpm: 115, threshold: 17 },
-  { bpm: 130, threshold: 14 },
-  { bpm: 145, threshold: 11 },
-  { bpm: 160, threshold: 9 },
+  { bpm: 100, threshold: 5.5 },
+  { bpm: 115, threshold: 4.0 },
+  { bpm: 130, threshold: 3.0 },
+  { bpm: 145, threshold: 2.2 },
+  { bpm: 160, threshold: 1.6 },
 ];
 const STAGE_DURATION_MS = 20000;   // how long each tempo stage lasts
 const FREEZE_WINDOW_MS = 1200;     // duration of each "freeze" beat
 const FREEZE_SUBCYCLE_MS = 10000;  // a freeze happens every N ms within a stage
-const FREEZE_THRESHOLD = 5;        // ultra-strict tolerance during freeze
+const FREEZE_THRESHOLD = 0.9;      // almost any twitch is out during freeze
 const GRACE_MS = 2000;             // immunity window after game start
 const COUNTDOWN_MS = 3000;
 

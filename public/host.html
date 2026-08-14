@@ -19,7 +19,8 @@
     </div>
 
     <script>
-      const ws = new WebSocket(`ws://${location.host}`);
+      const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${wsProtocol}//${location.host}`);
       const playersEl = document.getElementById("players");
       const statusEl = document.getElementById("status");
       const tempoEl = document.getElementById("tempoInfo");
@@ -29,50 +30,226 @@
 
       // --- Audio setup (Web Audio API, no external files needed) ---
       let actx = null;
-      let lastBeatTime = 0;
+      let master = null;
+      let noiseBuffer = null;
+      let padOsc = null;
+      let padFilter = null;
+      let padGain = null;
+      let lastStepTime = 0;
+      let stepCount = 0;
       let currentBpm = 100;
+      let currentStage = 0;
       let wasFreezing = false;
+      const BASS_NOTES = [55, 55, 65.41, 55, 73.42, 55, 82.41, 65.41];
+      const PAD_NOTES = [55, 61.74, 73.42, 82.41, 98];
 
       function ensureAudio() {
-        if (!actx)
+        if (!actx) {
           actx = new (window.AudioContext || window.webkitAudioContext)();
+          master = actx.createGain();
+          master.gain.value = 0.42;
+          const comp = actx.createDynamicsCompressor();
+          comp.threshold.value = -16;
+          comp.knee.value = 12;
+          comp.ratio.value = 4;
+          master.connect(comp).connect(actx.destination);
+        }
+        if (actx.state === "suspended") actx.resume();
       }
 
-      function playClick(freq = 880, dur = 0.05, gain = 0.15) {
+      function getNoiseBuffer() {
+        if (noiseBuffer) return noiseBuffer;
+        const length = Math.floor(actx.sampleRate * 0.4);
+        noiseBuffer = actx.createBuffer(1, length, actx.sampleRate);
+        const data = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+        return noiseBuffer;
+      }
+
+      function startPad() {
+        if (padOsc || !actx) return;
+        padOsc = actx.createOscillator();
+        padOsc.type = "sawtooth";
+        padOsc.frequency.value = PAD_NOTES[0];
+        padFilter = actx.createBiquadFilter();
+        padFilter.type = "lowpass";
+        padFilter.frequency.value = 380;
+        padFilter.Q.value = 6;
+        padGain = actx.createGain();
+        padGain.gain.value = 0.07;
+        padOsc.connect(padFilter).connect(padGain).connect(master);
+        padOsc.start();
+      }
+
+      function updatePad(stageIdx, freezeActive) {
+        if (!padOsc) startPad();
+        if (!padOsc) return;
+        const t = actx.currentTime;
+        padOsc.frequency.linearRampToValueAtTime(
+          PAD_NOTES[stageIdx] || 98,
+          t + 0.18,
+        );
+        padFilter.frequency.linearRampToValueAtTime(
+          380 + stageIdx * 420,
+          t + 0.18,
+        );
+        padGain.gain.cancelScheduledValues(t);
+        padGain.gain.linearRampToValueAtTime(
+          freezeActive ? 0.001 : 0.07 + stageIdx * 0.012,
+          t + 0.06,
+        );
+      }
+
+      function stopPad() {
+        if (!padOsc) return;
+        try {
+          padOsc.stop();
+        } catch (err) {}
+        padOsc = null;
+        padFilter = null;
+        padGain = null;
+      }
+
+      function playKick(gain = 0.9) {
+        const t = actx.currentTime;
         const osc = actx.createOscillator();
         const g = actx.createGain();
-        osc.frequency.value = freq;
         osc.type = "sine";
-        g.gain.value = gain;
-        g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
-        osc.connect(g).connect(actx.destination);
-        osc.start();
-        osc.stop(actx.currentTime + dur);
+        osc.frequency.setValueAtTime(150, t);
+        osc.frequency.exponentialRampToValueAtTime(38, t + 0.14);
+        g.gain.setValueAtTime(gain, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+        osc.connect(g).connect(master);
+        osc.start(t);
+        osc.stop(t + 0.24);
       }
 
-      function playFreezeSting() {
-        // dissonant stab to cue "freeze"
-        [220, 233, 466].forEach((f, i) => {
+      function playHat(gain = 0.05) {
+        const t = actx.currentTime;
+        const src = actx.createBufferSource();
+        src.buffer = getNoiseBuffer();
+        const hp = actx.createBiquadFilter();
+        hp.type = "highpass";
+        hp.frequency.value = 7000;
+        const g = actx.createGain();
+        g.gain.setValueAtTime(gain, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+        src.connect(hp).connect(g).connect(master);
+        src.start(t);
+        src.stop(t + 0.06);
+      }
+
+      function playClap() {
+        const t = actx.currentTime;
+        const src = actx.createBufferSource();
+        src.buffer = getNoiseBuffer();
+        const bp = actx.createBiquadFilter();
+        bp.type = "bandpass";
+        bp.frequency.value = 1400;
+        const g = actx.createGain();
+        g.gain.setValueAtTime(0.18, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+        src.connect(bp).connect(g).connect(master);
+        src.start(t);
+        src.stop(t + 0.18);
+      }
+
+      function playBass(stageIdx, step) {
+        const t = actx.currentTime;
+        const osc = actx.createOscillator();
+        const filter = actx.createBiquadFilter();
+        const g = actx.createGain();
+        osc.type = "square";
+        osc.frequency.value = BASS_NOTES[step % BASS_NOTES.length];
+        filter.type = "lowpass";
+        filter.frequency.value = 220 + stageIdx * 160;
+        g.gain.setValueAtTime(0.11, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+        osc.connect(filter).connect(g).connect(master);
+        osc.start(t);
+        osc.stop(t + 0.22);
+      }
+
+      function playCountdown() {
+        [0, 1, 2].forEach((i) => {
+          const t = actx.currentTime + i;
           const osc = actx.createOscillator();
           const g = actx.createGain();
-          osc.frequency.value = f;
-          osc.type = "sawtooth";
-          g.gain.value = 0.12;
-          g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.6);
-          osc.connect(g).connect(actx.destination);
-          osc.start();
-          osc.stop(actx.currentTime + 0.6);
+          osc.type = "triangle";
+          osc.frequency.value = i === 2 ? 880 : 523.25;
+          g.gain.setValueAtTime(0.001, t);
+          g.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+          osc.connect(g).connect(master);
+          osc.start(t);
+          osc.stop(t + 0.34);
         });
       }
 
-      function maybeTickBeat(bpm, freezeActive) {
+      function playFreezeSting() {
+        const t = actx.currentTime;
+        if (master) {
+          master.gain.cancelScheduledValues(t);
+          master.gain.setValueAtTime(master.gain.value, t);
+          master.gain.linearRampToValueAtTime(0.08, t + 0.04);
+        }
+        const src = actx.createBufferSource();
+        src.buffer = getNoiseBuffer();
+        const bp = actx.createBiquadFilter();
+        bp.type = "bandpass";
+        bp.Q.value = 4;
+        bp.frequency.setValueAtTime(1200, t);
+        bp.frequency.exponentialRampToValueAtTime(180, t + 0.55);
+        const ng = actx.createGain();
+        ng.gain.setValueAtTime(0.28, t);
+        ng.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+        src.connect(bp).connect(ng).connect(actx.destination);
+        src.start(t);
+        src.stop(t + 0.7);
+        [196, 207.65, 311.13, 466.16].forEach((freq) => {
+          const osc = actx.createOscillator();
+          const g = actx.createGain();
+          osc.type = "sawtooth";
+          osc.frequency.setValueAtTime(freq, t);
+          osc.frequency.exponentialRampToValueAtTime(freq * 0.45, t + 0.85);
+          g.gain.setValueAtTime(0.09, t);
+          g.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+          osc.connect(g).connect(actx.destination);
+          osc.start(t);
+          osc.stop(t + 0.92);
+        });
+      }
+
+      function releaseFreeze() {
+        if (!master) return;
+        const t = actx.currentTime;
+        master.gain.cancelScheduledValues(t);
+        master.gain.linearRampToValueAtTime(0.42, t + 0.12);
+      }
+
+      function playStep(step, stageIdx) {
+        const downbeat = step % 2 === 0;
+        if (downbeat) {
+          playKick(step % 8 === 0 ? 1 : 0.82);
+          playBass(stageIdx, Math.floor(step / 2));
+        }
+        playHat(downbeat ? 0.045 : 0.035 + stageIdx * 0.008);
+        if (stageIdx >= 2 && step % 4 === 2) playClap();
+        if (stageIdx >= 4 && !downbeat) playHat(0.07);
+      }
+
+      function maybeTickBeat(bpm, freezeActive, stageIdx) {
         if (!actx) return;
         currentBpm = bpm;
-        const beatMs = 60000 / bpm;
+        currentStage = stageIdx;
+        updatePad(stageIdx, freezeActive);
+        if (freezeActive) return;
+        const stepMs = 60000 / bpm / 2;
         const now = performance.now();
-        if (!freezeActive && now - lastBeatTime >= beatMs) {
-          lastBeatTime = now;
-          playClick(880, 0.05, 0.1);
+        if (now - lastStepTime >= stepMs) {
+          lastStepTime = now;
+          playStep(stepCount, stageIdx);
+          stepCount += 1;
         }
       }
 
@@ -93,10 +270,11 @@
             document.body.classList.add("freeze");
             statusEl.textContent = "FREEZE!";
           } else if (!msg.freezeActive && wasFreezing) {
+            releaseFreeze();
             document.body.classList.remove("freeze");
           }
           wasFreezing = msg.freezeActive;
-          maybeTickBeat(msg.bpm, msg.freezeActive);
+          maybeTickBeat(msg.bpm, msg.freezeActive, msg.stageIdx);
         }
       };
 
@@ -124,12 +302,23 @@
 
       function startGame() {
         ensureAudio();
+        playCountdown();
+        stepCount = 0;
+        lastStepTime = 0;
         ws.send(JSON.stringify({ type: "start_game" }));
       }
+
       function resetGame() {
         ws.send(JSON.stringify({ type: "reset_game" }));
         document.body.classList.remove("freeze");
         wasFreezing = false;
+        stopPad();
+        stepCount = 0;
+        lastStepTime = 0;
+        if (master) {
+          master.gain.cancelScheduledValues(actx.currentTime);
+          master.gain.value = 0.42;
+        }
       }
     </script>
   </body>

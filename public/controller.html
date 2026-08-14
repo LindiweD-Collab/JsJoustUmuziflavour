@@ -24,7 +24,8 @@
 </div>
 
 <script>
-const ws = new WebSocket(`ws://${location.host}`);
+const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+const ws = new WebSocket(`${wsProtocol}//${location.host}`);
 const screenEl = document.getElementById('screen');
 const statusEl = document.getElementById('status');
 const subEl = document.getElementById('sub');
@@ -45,23 +46,60 @@ function join() {
   const room = prefilledRoom || document.getElementById('roomInput').value;
   const name = document.getElementById('nameInput').value || 'Player';
   if (!room) { errorEl.textContent = 'Enter a room code'; return; }
+  if (ws.readyState !== WebSocket.OPEN) {
+    errorEl.textContent = 'Connecting... tap Join again';
+    return;
+  }
+  requestMotionPermission();
   ws.send(JSON.stringify({ type: 'join', room, name }));
 }
 
+let motionListening = false;
+
 function requestMotionPermission() {
+  const startListening = () => {
+    if (motionListening) return;
+    motionListening = true;
+    window.addEventListener('devicemotion', onMotion);
+  };
   if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
     DeviceMotionEvent.requestPermission().then(state => {
-      if (state === 'granted') window.addEventListener('devicemotion', onMotion);
+      if (state === 'granted') startListening();
     }).catch(console.error);
   } else {
-    window.addEventListener('devicemotion', onMotion);
+    startListening();
   }
 }
 
+let gravX = 0;
+let gravY = 0;
+let gravZ = 0;
+const GRAVITY_ALPHA = 0.85;
+
+function vectorMag(v) {
+  return Math.sqrt((v.x || 0) ** 2 + (v.y || 0) ** 2 + (v.z || 0) ** 2);
+}
+
 function onMotion(e) {
-  const a = e.acceleration || e.accelerationIncludingGravity;
-  if (!a) return;
-  const magnitude = Math.sqrt((a.x||0)**2 + (a.y||0)**2 + (a.z||0)**2);
+  const user = e.acceleration;
+  const raw = e.accelerationIncludingGravity;
+  let magUser = 0;
+  let magLinear = 0;
+
+  if (user && user.x != null) magUser = vectorMag(user);
+
+  if (raw && raw.x != null) {
+    const ax = raw.x || 0;
+    const ay = raw.y || 0;
+    const az = raw.z || 0;
+    gravX = GRAVITY_ALPHA * gravX + (1 - GRAVITY_ALPHA) * ax;
+    gravY = GRAVITY_ALPHA * gravY + (1 - GRAVITY_ALPHA) * ay;
+    gravZ = GRAVITY_ALPHA * gravZ + (1 - GRAVITY_ALPHA) * az;
+    magLinear = Math.sqrt((ax - gravX) ** 2 + (ay - gravY) ** 2 + (az - gravZ) ** 2);
+  }
+
+  const magnitude = Math.max(magUser, magLinear);
+  if (!magnitude || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: 'motion', magnitude }));
 }
 
@@ -74,7 +112,6 @@ ws.onmessage = (event) => {
     myId = msg.id;
     document.getElementById('joinBox').classList.add('hidden');
     document.getElementById('gameBox').classList.remove('hidden');
-    requestMotionPermission();
   }
   if (msg.type === 'state') {
     gameState = msg.gameState;
