@@ -1,44 +1,103 @@
 # JS Joust
 
-## Run it
-```
+A phone-as-controller party game. One laptop or TV is the **host**. Everyone else uses their **phone as a sword**. Stay steady when the music allows it, freeze when it stops, and lunge at each other to clash.
+
+Phones must be on **HTTPS** (or localhost) or the browser will not share motion data.
+
+---
+
+## Play in 5 minutes (local)
+
+You need Node.js, a laptop on Wi‑Fi, and phones on the **same Wi‑Fi**.
+
+```bash
 npm install
-node server.js
+npm start
 ```
 
-- **Host screen** (TV/laptop, on WiFi): open `http://localhost:3000/host.html` — it generates a room code and QR automatically.
-- **Players**: scan the QR code with their phones (same WiFi network). The room code is baked into the QR link, so they just tap Join.
-  - No QR reader handy? Players can go to `http://<host-ip>:3000/controller.html`, type in the 4-character room code shown on the host screen, and enter a name.
+1. On the laptop, open [http://localhost:3000](http://localhost:3000) (this is the host / TV screen).
+2. A **room code** and **QR** appear automatically.
+3. Players scan the QR (or open `http://<your-laptop-ip>:3000/controller.html` and type the code).
+4. Enter a name and tap **Join Game**.
+5. **Hold the phone still and upright** until it says READY (white ring on the host orb).
+6. Host taps **Start Game**. Turn the laptop volume up — the music *is* the rules.
 
-## Deploy on Render
-Create a **Web Service** (not a static site) from this repo. Render provides HTTPS automatically.
+The terminal prints your local IP if you need it for phones that cannot scan the QR.
 
-- Build: `npm install`
-- Start: `npm start`
-- Health check: `/health`
+---
 
-On Render, the QR code points at `https://your-app.onrender.com/controller.html?room=XXXX`. Phones must use that HTTPS URL so `DeviceMotion` and `wss://` work. The free instance sleeps after idle time — the first load can take ~30s.
+## How a round works
 
-## What's implemented
-
-| Requirement | Where |
+| What you see / hear | What you do |
 |---|---|
-| Game room other players can join | `server.js` — `rooms{}` keyed by a generated 4-char code; unlimited concurrent rooms, empty rooms are cleaned up on disconnect |
-| Cellphones as controllers | `controller.html` — `DeviceMotion` streamed to the server on every event |
-| Real-time communication | `ws` WebSocket server, per-room broadcast |
-| Music/tempo-driven gameplay | `server.js` `computeGameplay()` + `host.html` Web Audio — see below |
-| Multi-device sync as core challenge | server is sole source of truth per room; state + tempo broadcast to every socket in that room |
+| Your phone glows your **orb color** | That is your identity. Watch each other, not the text. |
+| Beat ticks + phone buzz | You may joust. Too much idle shaking → you become a **ghost**. |
+| **FREEZE** (purple, sting, long buzz) | Do not move. Almost any twitch and you are out. |
+| Two people lunge at the same time | **Clash** — the weaker hit becomes a ghost. |
+| You go ghost (dim orb) | Stay in. You can still clash and hunt the living. |
+| Two players left | **Sudden death** — fastest tempo, nastier freeze. |
+| Gold orb + fanfare | Winner. Host taps **Play Again** (names, colors, and win streaks stay). |
 
-## The music/tempo mechanic
-This was the missing piece last time — now:
-- The game runs through 5 **tempo stages** (100 → 160 BPM), each lasting 20s. Movement tolerance tightens as BPM climbs (`STAGES` array in `server.js`).
-- Within each stage, there's a **freeze window** every 10 seconds (1.2s long) where the tolerance drops to almost nothing (`FREEZE_THRESHOLD = 5`) — this is the classic JS Joust "the music stops, don't move" beat.
-- The **host page** plays this live: a soft click on every beat (Web Audio oscillator, no external audio files needed) and a dissonant sting the instant a freeze window starts, so the audio *is* the rule change, not just a decoration.
-- The **server** independently computes the same threshold from `gameStartedAt` + elapsed time, so cheating by ignoring the audio doesn't help — the elimination logic is authoritative server-side regardless of what the client renders/plays.
-- Controller phones flash red and show "FREEZE!" the instant a freeze window starts, so players get a visual cue too (useful if they can't hear the host speaker well).
+**Teams:** on the host, tap **Teams: On** in the lobby. Players split red / blue. Last team with someone alive wins.
 
-## Known limitations / next steps
-- **HTTPS required for phone motion** — browsers only expose `DeviceMotion` on a secure context (HTTPS or localhost). Deploy as a Render **Web Service** (not a static site). Render terminates TLS; the app still listens on HTTP internally and clients use `wss://` when the page is HTTPS.
-- **No reconnect handling** — a WiFi blip drops a player from the room permanently.
-- **Audio timing is client-scheduled, not sample-accurate** — fine for gameplay pacing, but it's not a tight DAW-style beat clock. If you want a driving/DJ-quality track under it, swap the Web Audio clicks for a looping audio file synced to the same `tempo` broadcast.
-- **Threshold values are untested against real phones** — different devices report different accelerometer scales; playtest and tune `STAGES` / `FREEZE_THRESHOLD` in `server.js`.
+If ghosts wipe the last living player, **GHOSTS WIN**.
+
+---
+
+## Deploy on Render (HTTPS)
+
+Phone motion and `wss://` need a real HTTPS URL. Use a Render **Web Service**, not a static site.
+
+| Setting | Value |
+|---|---|
+| Build | `npm install` |
+| Start | `npm start` |
+| Health check | `/health` |
+
+After deploy:
+
+1. Open `https://your-app.onrender.com` on the host screen.
+2. Players scan the QR — it already points at the HTTPS controller link.
+3. Free instances sleep when idle; the first load can take ~30 seconds.
+
+A `render.yaml` is in the repo if you want to wire this as a Blueprint.
+
+---
+
+## Project map
+
+```
+server.js                 Game rules, rooms, WebSockets
+public/host.html          TV screen + music
+public/controller.html    Phone sword
+public/css/tokens.css     Shared colors (start here to restyle)
+public/css/host.css       Host layout
+public/css/controller.css Phone layout
+```
+
+The **server** decides who dies. Clients only send motion and show state. Tune feel in `server.js`:
+
+- `STAGES` — BPM and how much movement is allowed
+- `FREEZE_THRESHOLD` — how still FREEZE is (default `0.9`)
+- `CLASH_WINDOW_MS` — how close two lunges must be (default `80`)
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| Phone never sends motion / Join does nothing | Use HTTPS (Render) or localhost. On iPhone, tap Join so motion permission can pop. |
+| QR opens a dead link locally | Phones must be on the same Wi‑Fi, not guest isolation. Use the laptop IP printed in the terminal. |
+| Have to shake violently to lose | Hard-refresh the phone page so the gravity-stripped motion code loads. |
+| WebSocket fails on Render | Confirm it is a Web Service. The page must load as `https://` so the client uses `wss://`. |
+| Audio silent | Click **Start Game** on the host (browsers block sound until a click). |
+| Player drops forever after a blip | There is no reconnect yet — they rejoin as a new orb. |
+
+---
+
+## Known limits
+
+- A Wi‑Fi blip removes that player from the room.
+- Beat clock is good enough for a party, not studio-tight.
+- Cheap phones report motion on different scales; playtest and tweak `STAGES` if needed.
