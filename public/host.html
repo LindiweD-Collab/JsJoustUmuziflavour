@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>JS Joust — Host</title>
+<style>
+  body { margin: 0; background: #0a0a0a; color: #fff; font-family: -apple-system, sans-serif;
+    height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  h1 { font-size: 3vw; margin-bottom: 0; letter-spacing: 2px; }
+  #code { font-size: 5vw; font-weight: 900; letter-spacing: 8px; color: #4ade80; margin: 6px 0; }
+  #qr { margin: 10px 0; border-radius: 12px; }
+  #players { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; max-width: 80%; margin: 20px 0; }
+  .player { padding: 12px 20px; border-radius: 10px; background: #1a1a1a; font-size: 1.5vw; font-weight: 700;
+    border: 3px solid #333; transition: all 0.1s; }
+  .alive { border-color: #4ade80; }
+  .dead { border-color: #ef4444; opacity: 0.4; text-decoration: line-through; }
+  button { font-size: 1.3vw; padding: 12px 32px; border-radius: 12px; border: none;
+    background: #4ade80; font-weight: 700; margin: 6px; cursor: pointer; }
+  #status { font-size: 2vw; opacity: 0.7; margin-top: 6px; transition: color 0.1s; }
+  #tempoInfo { font-size: 1.1vw; opacity: 0.5; margin-top: 4px; }
+  body.freeze #status { color: #ef4444; }
+  body.freeze { background: #200; }
+</style>
+</head>
+<body>
+<h1>JS JOUST</h1>
+<div id="code">----</div>
+<img id="qr" width="180" height="180">
+<div id="status">Scan to join</div>
+<div id="tempoInfo"></div>
+<div id="players"></div>
+<div>
+  <button onclick="startGame()">Start Game</button>
+  <button onclick="resetGame()" style="background:#333;color:#fff;">Reset</button>
+</div>
+
+<script>
+const ws = new WebSocket(`ws://${location.host}`);
+const playersEl = document.getElementById('players');
+const statusEl = document.getElementById('status');
+const tempoEl = document.getElementById('tempoInfo');
+const codeEl = document.getElementById('code');
+const qrEl = document.getElementById('qr');
+let roomCode = null;
+
+// --- Audio setup (Web Audio API, no external files needed) ---
+let actx = null;
+let lastBeatTime = 0;
+let currentBpm = 100;
+let wasFreezing = false;
+
+function ensureAudio() {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+}
+
+function playClick(freq = 880, dur = 0.05, gain = 0.15) {
+  const osc = actx.createOscillator();
+  const g = actx.createGain();
+  osc.frequency.value = freq;
+  osc.type = 'sine';
+  g.gain.value = gain;
+  g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+  osc.connect(g).connect(actx.destination);
+  osc.start();
+  osc.stop(actx.currentTime + dur);
+}
+
+function playFreezeSting() {
+  // dissonant stab to cue "freeze"
+  [220, 233, 466].forEach((f, i) => {
+    const osc = actx.createOscillator();
+    const g = actx.createGain();
+    osc.frequency.value = f;
+    osc.type = 'sawtooth';
+    g.gain.value = 0.12;
+    g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.6);
+    osc.connect(g).connect(actx.destination);
+    osc.start();
+    osc.stop(actx.currentTime + 0.6);
+  });
+}
+
+function maybeTickBeat(bpm, freezeActive) {
+  if (!actx) return;
+  currentBpm = bpm;
+  const beatMs = 60000 / bpm;
+  const now = performance.now();
+  if (!freezeActive && now - lastBeatTime >= beatMs) {
+    lastBeatTime = now;
+    playClick(880, 0.05, 0.1);
+  }
+}
+
+ws.onopen = () => ws.send(JSON.stringify({ type: 'create_room' }));
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === 'room_created') {
+    roomCode = msg.code;
+    codeEl.textContent = roomCode;
+    qrEl.src = `/qr?room=${roomCode}`;
+  }
+  if (msg.type === 'state') render(msg);
+  if (msg.type === 'tempo') {
+    tempoEl.textContent = `${msg.bpm} BPM — stage ${msg.stageIdx + 1}`;
+    if (msg.freezeActive && !wasFreezing) {
+      playFreezeSting();
+      document.body.classList.add('freeze');
+      statusEl.textContent = 'FREEZE!';
+    } else if (!msg.freezeActive && wasFreezing) {
+      document.body.classList.remove('freeze');
+    }
+    wasFreezing = msg.freezeActive;
+    maybeTickBeat(msg.bpm, msg.freezeActive);
+  }
+};
+
+function render(msg) {
+  playersEl.innerHTML = msg.players.map(p =>
+    `<div class="player ${p.alive ? 'alive' : 'dead'}">${p.name}</div>`
+  ).join('');
+
+  const aliveCount = msg.players.filter(p => p.alive).length;
+  if (msg.gameState === 'lobby') { statusEl.textContent = 'Scan to join'; tempoEl.textContent = ''; }
+  else if (msg.gameState === 'countdown') statusEl.textContent = 'Starting...';
+  else if (msg.gameState === 'live' && !wasFreezing) {
+    statusEl.textContent = aliveCount <= 1 && msg.players.length > 1
+      ? `${msg.players.find(p=>p.alive)?.name || 'Nobody'} WINS!`
+      : `${aliveCount} player(s) still standing`;
+  }
+}
+
+function startGame() {
+  ensureAudio();
+  ws.send(JSON.stringify({ type: 'start_game' }));
+}
+function resetGame() {
+  ws.send(JSON.stringify({ type: 'reset_game' }));
+  document.body.classList.remove('freeze');
+  wasFreezing = false;
+}
+</script>
+</body>
+</html>

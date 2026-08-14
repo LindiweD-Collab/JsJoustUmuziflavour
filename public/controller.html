@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>JS Joust — Controller</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; width: 100%;
+    background: #111; color: #fff;
+    font-family: -apple-system, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    text-align: center; touch-action: none; user-select: none;
+  }
+  #screen { width: 100%; height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; transition: background 0.1s; }
+  #status { font-size: 10vw; font-weight: 900; }
+  #sub { font-size: 4vw; opacity: 0.7; margin-top: 10px; }
+  input { font-size: 5vw; padding: 10px; border-radius: 8px; border: none; margin-bottom: 14px; width: 60%;
+    text-transform: uppercase; text-align: center; }
+  button { font-size: 5vw; padding: 14px 28px; border-radius: 12px; border: none;
+    background: #4ade80; font-weight: 700; }
+  #error { color: #ef4444; margin-top: 10px; font-size: 3.5vw; }
+  .live { background: #052e16; }
+  .dead { background: #450a0a; }
+  .lobby { background: #111; }
+  .freeze { background: #7f1d1d; animation: pulse 0.3s infinite alternate; }
+  @keyframes pulse { from { filter: brightness(1); } to { filter: brightness(1.4); } }
+</style>
+</head>
+<body>
+<div id="screen" class="lobby">
+  <div id="joinBox">
+    <div id="roomRow">
+      <input id="roomInput" placeholder="ROOM CODE" maxlength="4"><br>
+    </div>
+    <input id="nameInput" placeholder="Your name" maxlength="12"><br>
+    <button onclick="join()">Join Game</button>
+    <div id="error"></div>
+  </div>
+  <div id="gameBox" style="display:none">
+    <div id="status">WAITING</div>
+    <div id="sub"></div>
+  </div>
+</div>
+
+<script>
+const ws = new WebSocket(`ws://${location.host}`);
+const screenEl = document.getElementById('screen');
+const statusEl = document.getElementById('status');
+const subEl = document.getElementById('sub');
+const errorEl = document.getElementById('error');
+let myId = null;
+let alive = true;
+let gameState = 'lobby';
+let freezeActive = false;
+
+// pre-fill room code from QR link, and hide the field if present
+const params = new URLSearchParams(location.search);
+const prefilledRoom = params.get('room');
+if (prefilledRoom) {
+  document.getElementById('roomRow').style.display = 'none';
+}
+
+function join() {
+  const room = prefilledRoom || document.getElementById('roomInput').value;
+  const name = document.getElementById('nameInput').value || 'Player';
+  if (!room) { errorEl.textContent = 'Enter a room code'; return; }
+  ws.send(JSON.stringify({ type: 'join', room, name }));
+}
+
+function requestMotionPermission() {
+  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+    DeviceMotionEvent.requestPermission().then(state => {
+      if (state === 'granted') window.addEventListener('devicemotion', onMotion);
+    }).catch(console.error);
+  } else {
+    window.addEventListener('devicemotion', onMotion);
+  }
+}
+
+function onMotion(e) {
+  const a = e.acceleration || e.accelerationIncludingGravity;
+  if (!a) return;
+  const magnitude = Math.sqrt((a.x||0)**2 + (a.y||0)**2 + (a.z||0)**2);
+  ws.send(JSON.stringify({ type: 'motion', magnitude }));
+}
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === 'join_error') {
+    errorEl.textContent = msg.message;
+  }
+  if (msg.type === 'joined') {
+    myId = msg.id;
+    document.getElementById('joinBox').style.display = 'none';
+    document.getElementById('gameBox').style.display = 'block';
+    requestMotionPermission();
+  }
+  if (msg.type === 'state') {
+    gameState = msg.gameState;
+    const me = msg.players.find(p => p.id === myId);
+    if (me) alive = me.alive;
+    render();
+  }
+  if (msg.type === 'tempo') {
+    freezeActive = msg.freezeActive;
+    render();
+  }
+};
+
+function render() {
+  if (gameState === 'lobby') {
+    statusEl.textContent = 'WAITING';
+    subEl.textContent = 'Hang tight for the host to start';
+    screenEl.className = 'lobby';
+  } else if (gameState === 'countdown') {
+    statusEl.textContent = 'GET READY';
+    subEl.textContent = '...';
+    screenEl.className = 'lobby';
+  } else if (gameState === 'live') {
+    if (!alive) {
+      statusEl.textContent = 'OUT';
+      subEl.textContent = 'You moved too much';
+      screenEl.className = 'dead';
+    } else if (freezeActive) {
+      statusEl.textContent = 'FREEZE!';
+      subEl.textContent = "Don't move a muscle";
+      screenEl.className = 'freeze';
+    } else {
+      statusEl.textContent = 'STAY STEADY';
+      subEl.textContent = 'Joust!';
+      screenEl.className = 'live';
+    }
+  }
+}
+</script>
+</body>
+</html>
