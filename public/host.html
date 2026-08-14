@@ -1,129 +1,136 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-<meta charset="UTF-8">
-<title>JS Joust — Host</title>
-<link rel="stylesheet" href="/css/tokens.css">
-<link rel="stylesheet" href="/css/host.css">
-</head>
-<body>
-<h1 class="title">JS JOUST</h1>
-<div id="code" class="room-code">----</div>
-<img id="qr" class="qr" width="180" height="180" alt="Join QR code">
-<div id="status" class="status">Scan to join</div>
-<div id="tempoInfo" class="tempo"></div>
-<div id="players" class="players"></div>
-<div class="actions">
-  <button class="btn" onclick="startGame()">Start Game</button>
-  <button class="btn btn-secondary" onclick="resetGame()">Reset</button>
-</div>
+  <head>
+    <meta charset="UTF-8" />
+    <title>JS Joust — Host</title>
+    <link rel="stylesheet" href="/css/tokens.css" />
+    <link rel="stylesheet" href="/css/host.css" />
+  </head>
+  <body>
+    <h1 class="title">JS JOUST</h1>
+    <div id="code" class="room-code">----</div>
+    <img id="qr" class="qr" width="180" height="180" alt="Join QR code" />
+    <div id="status" class="status">Scan to join</div>
+    <div id="tempoInfo" class="tempo"></div>
+    <div id="players" class="players"></div>
+    <div class="actions">
+      <button class="btn" onclick="startGame()">Start Game</button>
+      <button class="btn btn-secondary" onclick="resetGame()">Reset</button>
+    </div>
 
-<script>
-const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const ws = new WebSocket(`${wsProtocol}//${location.host}`);
-const playersEl = document.getElementById('players');
-const statusEl = document.getElementById('status');
-const tempoEl = document.getElementById('tempoInfo');
-const codeEl = document.getElementById('code');
-const qrEl = document.getElementById('qr');
-let roomCode = null;
+    <script>
+      const ws = new WebSocket(`ws://${location.host}`);
+      const playersEl = document.getElementById("players");
+      const statusEl = document.getElementById("status");
+      const tempoEl = document.getElementById("tempoInfo");
+      const codeEl = document.getElementById("code");
+      const qrEl = document.getElementById("qr");
+      let roomCode = null;
 
-// --- Audio setup (Web Audio API, no external files needed) ---
-let actx = null;
-let lastBeatTime = 0;
-let currentBpm = 100;
-let wasFreezing = false;
+      // --- Audio setup (Web Audio API, no external files needed) ---
+      let actx = null;
+      let lastBeatTime = 0;
+      let currentBpm = 100;
+      let wasFreezing = false;
 
-function ensureAudio() {
-  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
-}
+      function ensureAudio() {
+        if (!actx)
+          actx = new (window.AudioContext || window.webkitAudioContext)();
+      }
 
-function playClick(freq = 880, dur = 0.05, gain = 0.15) {
-  const osc = actx.createOscillator();
-  const g = actx.createGain();
-  osc.frequency.value = freq;
-  osc.type = 'sine';
-  g.gain.value = gain;
-  g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
-  osc.connect(g).connect(actx.destination);
-  osc.start();
-  osc.stop(actx.currentTime + dur);
-}
+      function playClick(freq = 880, dur = 0.05, gain = 0.15) {
+        const osc = actx.createOscillator();
+        const g = actx.createGain();
+        osc.frequency.value = freq;
+        osc.type = "sine";
+        g.gain.value = gain;
+        g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+        osc.connect(g).connect(actx.destination);
+        osc.start();
+        osc.stop(actx.currentTime + dur);
+      }
 
-function playFreezeSting() {
-  // dissonant stab to cue "freeze"
-  [220, 233, 466].forEach((f, i) => {
-    const osc = actx.createOscillator();
-    const g = actx.createGain();
-    osc.frequency.value = f;
-    osc.type = 'sawtooth';
-    g.gain.value = 0.12;
-    g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.6);
-    osc.connect(g).connect(actx.destination);
-    osc.start();
-    osc.stop(actx.currentTime + 0.6);
-  });
-}
+      function playFreezeSting() {
+        // dissonant stab to cue "freeze"
+        [220, 233, 466].forEach((f, i) => {
+          const osc = actx.createOscillator();
+          const g = actx.createGain();
+          osc.frequency.value = f;
+          osc.type = "sawtooth";
+          g.gain.value = 0.12;
+          g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.6);
+          osc.connect(g).connect(actx.destination);
+          osc.start();
+          osc.stop(actx.currentTime + 0.6);
+        });
+      }
 
-function maybeTickBeat(bpm, freezeActive) {
-  if (!actx) return;
-  currentBpm = bpm;
-  const beatMs = 60000 / bpm;
-  const now = performance.now();
-  if (!freezeActive && now - lastBeatTime >= beatMs) {
-    lastBeatTime = now;
-    playClick(880, 0.05, 0.1);
-  }
-}
+      function maybeTickBeat(bpm, freezeActive) {
+        if (!actx) return;
+        currentBpm = bpm;
+        const beatMs = 60000 / bpm;
+        const now = performance.now();
+        if (!freezeActive && now - lastBeatTime >= beatMs) {
+          lastBeatTime = now;
+          playClick(880, 0.05, 0.1);
+        }
+      }
 
-ws.onopen = () => ws.send(JSON.stringify({ type: 'create_room' }));
+      ws.onopen = () => ws.send(JSON.stringify({ type: "create_room" }));
 
-ws.onmessage = (event) => {
-  const msg = JSON.parse(event.data);
-  if (msg.type === 'room_created') {
-    roomCode = msg.code;
-    codeEl.textContent = roomCode;
-    qrEl.src = `/qr?room=${roomCode}`;
-  }
-  if (msg.type === 'state') render(msg);
-  if (msg.type === 'tempo') {
-    tempoEl.textContent = `${msg.bpm} BPM — stage ${msg.stageIdx + 1}`;
-    if (msg.freezeActive && !wasFreezing) {
-      playFreezeSting();
-      document.body.classList.add('freeze');
-      statusEl.textContent = 'FREEZE!';
-    } else if (!msg.freezeActive && wasFreezing) {
-      document.body.classList.remove('freeze');
-    }
-    wasFreezing = msg.freezeActive;
-    maybeTickBeat(msg.bpm, msg.freezeActive);
-  }
-};
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "room_created") {
+          roomCode = msg.code;
+          codeEl.textContent = roomCode;
+          qrEl.src = `/qr?room=${roomCode}`;
+        }
+        if (msg.type === "state") render(msg);
+        if (msg.type === "tempo") {
+          tempoEl.textContent = `${msg.bpm} BPM — stage ${msg.stageIdx + 1}`;
+          if (msg.freezeActive && !wasFreezing) {
+            playFreezeSting();
+            document.body.classList.add("freeze");
+            statusEl.textContent = "FREEZE!";
+          } else if (!msg.freezeActive && wasFreezing) {
+            document.body.classList.remove("freeze");
+          }
+          wasFreezing = msg.freezeActive;
+          maybeTickBeat(msg.bpm, msg.freezeActive);
+        }
+      };
 
-function render(msg) {
-  playersEl.innerHTML = msg.players.map(p =>
-    `<div class="player ${p.alive ? 'alive' : 'dead'}">${p.name}</div>`
-  ).join('');
+      function render(msg) {
+        playersEl.innerHTML = msg.players
+          .map(
+            (p) =>
+              `<div class="player ${p.alive ? "alive" : "dead"}">${p.name}</div>`,
+          )
+          .join("");
 
-  const aliveCount = msg.players.filter(p => p.alive).length;
-  if (msg.gameState === 'lobby') { statusEl.textContent = 'Scan to join'; tempoEl.textContent = ''; }
-  else if (msg.gameState === 'countdown') statusEl.textContent = 'Starting...';
-  else if (msg.gameState === 'live' && !wasFreezing) {
-    statusEl.textContent = aliveCount <= 1 && msg.players.length > 1
-      ? `${msg.players.find(p=>p.alive)?.name || 'Nobody'} WINS!`
-      : `${aliveCount} player(s) still standing`;
-  }
-}
+        const aliveCount = msg.players.filter((p) => p.alive).length;
+        if (msg.gameState === "lobby") {
+          statusEl.textContent = "Scan to join";
+          tempoEl.textContent = "";
+        } else if (msg.gameState === "countdown")
+          statusEl.textContent = "Starting...";
+        else if (msg.gameState === "live" && !wasFreezing) {
+          statusEl.textContent =
+            aliveCount <= 1 && msg.players.length > 1
+              ? `${msg.players.find((p) => p.alive)?.name || "Nobody"} WINS!`
+              : `${aliveCount} player(s) still standing`;
+        }
+      }
 
-function startGame() {
-  ensureAudio();
-  ws.send(JSON.stringify({ type: 'start_game' }));
-}
-function resetGame() {
-  ws.send(JSON.stringify({ type: 'reset_game' }));
-  document.body.classList.remove('freeze');
-  wasFreezing = false;
-}
-</script>
-</body>
+      function startGame() {
+        ensureAudio();
+        ws.send(JSON.stringify({ type: "start_game" }));
+      }
+      function resetGame() {
+        ws.send(JSON.stringify({ type: "reset_game" }));
+        document.body.classList.remove("freeze");
+        wasFreezing = false;
+      }
+    </script>
+  </body>
 </html>

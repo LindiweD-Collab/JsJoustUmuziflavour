@@ -24,8 +24,7 @@
 </div>
 
 <script>
-const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const ws = new WebSocket(`${wsProtocol}//${location.host}`);
+const ws = new WebSocket(`ws://${location.host}`);
 const screenEl = document.getElementById('screen');
 const statusEl = document.getElementById('status');
 const subEl = document.getElementById('sub');
@@ -46,28 +45,16 @@ function join() {
   const room = prefilledRoom || document.getElementById('roomInput').value;
   const name = document.getElementById('nameInput').value || 'Player';
   if (!room) { errorEl.textContent = 'Enter a room code'; return; }
-  if (ws.readyState !== WebSocket.OPEN) {
-    errorEl.textContent = 'Connecting... tap Join again';
-    return;
-  }
-  requestMotionPermission();
   ws.send(JSON.stringify({ type: 'join', room, name }));
 }
 
-let motionListening = false;
-
 function requestMotionPermission() {
-  const startListening = () => {
-    if (motionListening) return;
-    motionListening = true;
-    window.addEventListener('devicemotion', onMotion);
-  };
   if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
     DeviceMotionEvent.requestPermission().then(state => {
-      if (state === 'granted') startListening();
+      if (state === 'granted') window.addEventListener('devicemotion', onMotion);
     }).catch(console.error);
   } else {
-    startListening();
+    window.addEventListener('devicemotion', onMotion);
   }
 }
 
@@ -87,6 +74,7 @@ ws.onmessage = (event) => {
     myId = msg.id;
     document.getElementById('joinBox').classList.add('hidden');
     document.getElementById('gameBox').classList.remove('hidden');
+    requestMotionPermission();
   }
   if (msg.type === 'state') {
     gameState = msg.gameState;

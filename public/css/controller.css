@@ -23,7 +23,7 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  transition: background 0.1s;
+  transition: background 0.1s, box-shadow 0.1s;
 }
 
 .hidden {
@@ -34,57 +34,97 @@ body {
   font-size: 5vw;
   padding: 10px;
   border-radius: var(--radius-sm);
-  border: none;
+  border: 2px solid var(--color-border);
+  background: rgba(0, 0, 0, 0.5);
+  color: var(--color-accent);
   margin-bottom: 14px;
   width: 60%;
   text-transform: uppercase;
   text-align: center;
+  font-family: inherit;
+  letter-spacing: 2px;
+}
+
+.field:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: inset 0 0 8px rgba(0, 243, 255, 0.2), var(--glow-cyan);
 }
 
 .btn {
   font-size: 5vw;
   padding: 14px 28px;
   border-radius: var(--radius-lg);
-  border: none;
-  background: var(--color-accent);
+  border: 2px solid var(--color-accent);
+  background: transparent;
+  color: var(--color-accent);
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  box-shadow: var(--glow-cyan);
+  text-shadow: 0 0 5px var(--color-accent);
+  font-family: inherit;
+}
+
+.btn:active {
+  background: var(--color-accent);
+  color: #000;
 }
 
 .error {
   color: var(--color-danger);
   margin-top: 10px;
   font-size: 3.5vw;
+  text-shadow: var(--glow-red);
 }
 
 .status {
   font-size: 10vw;
   font-weight: 900;
+  letter-spacing: 4px;
+  text-transform: uppercase;
 }
 
 .sub {
   font-size: 4vw;
-  opacity: 0.7;
+  opacity: 0.9;
   margin-top: 10px;
+  letter-spacing: 2px;
 }
 
+/* Screen States */
 .screen.lobby {
   background: var(--color-bg-controller);
 }
 
 .screen.live {
   background: var(--color-bg-live);
+  box-shadow: inset 0 0 50px rgba(57, 255, 20, 0.1);
+}
+.screen.live .status {
+  color: var(--color-alive);
+  text-shadow: var(--glow-green);
 }
 
 .screen.dead {
   background: var(--color-bg-dead);
+  box-shadow: inset 0 0 50px rgba(255, 0, 60, 0.2);
+}
+.screen.dead .status {
+  color: var(--color-danger);
+  text-shadow: var(--glow-red);
 }
 
 .screen.freeze {
-  background: var(--color-bg-freeze-pulse);
-  animation: pulse 0.3s infinite alternate;
+  background: var(--color-bg-freeze);
+  animation: electric-pulse 0.15s infinite alternate;
+}
+.screen.freeze .status {
+  color: var(--neon-purple);
+  text-shadow: var(--glow-purple);
 }
 
-@keyframes pulse {
-  from { filter: brightness(1); }
-  to { filter: brightness(1.4); }
+@keyframes electric-pulse {
+  from { background: var(--color-bg-freeze); box-shadow: inset 0 0 20px var(--neon-purple); }
+  to { background: var(--color-bg-freeze-pulse); box-shadow: inset 0 0 80px var(--neon-purple); }
 }
