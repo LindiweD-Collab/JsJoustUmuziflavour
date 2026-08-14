@@ -60,16 +60,17 @@
       let wasFreezing = false;
       const BASS_NOTES = [55, 55, 65.41, 55, 73.42, 55, 82.41, 65.41];
       const PAD_NOTES = [55, 61.74, 73.42, 82.41, 98];
+      const MASTER_GAIN = 1;
 
       function ensureAudio() {
         if (!actx) {
           actx = new (window.AudioContext || window.webkitAudioContext)();
           master = actx.createGain();
-          master.gain.value = 0.42;
+          master.gain.value = MASTER_GAIN;
           const comp = actx.createDynamicsCompressor();
-          comp.threshold.value = -16;
-          comp.knee.value = 12;
-          comp.ratio.value = 4;
+          comp.threshold.value = -8;
+          comp.knee.value = 8;
+          comp.ratio.value = 2.5;
           master.connect(comp).connect(actx.destination);
         }
         if (actx.state === "suspended") actx.resume();
@@ -94,7 +95,7 @@
         padFilter.frequency.value = 380;
         padFilter.Q.value = 6;
         padGain = actx.createGain();
-        padGain.gain.value = 0.07;
+        padGain.gain.value = 0.14;
         padOsc.connect(padFilter).connect(padGain).connect(master);
         padOsc.start();
       }
@@ -113,7 +114,7 @@
         );
         padGain.gain.cancelScheduledValues(t);
         padGain.gain.linearRampToValueAtTime(
-          freezeActive ? 0.001 : 0.07 + stageIdx * 0.012,
+          freezeActive ? 0.001 : 0.14 + stageIdx * 0.02,
           t + 0.06,
         );
       }
@@ -181,7 +182,7 @@
         osc.frequency.value = BASS_NOTES[step % BASS_NOTES.length];
         filter.type = "lowpass";
         filter.frequency.value = 220 + stageIdx * 160;
-        g.gain.setValueAtTime(0.11, t);
+        g.gain.setValueAtTime(0.2, t);
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
         osc.connect(filter).connect(g).connect(master);
         osc.start(t);
@@ -209,7 +210,7 @@
         if (master) {
           master.gain.cancelScheduledValues(t);
           master.gain.setValueAtTime(master.gain.value, t);
-          master.gain.linearRampToValueAtTime(0.08, t + 0.04);
+          master.gain.linearRampToValueAtTime(0.22, t + 0.04);
         }
         const src = actx.createBufferSource();
         src.buffer = getNoiseBuffer();
@@ -242,7 +243,7 @@
         if (!master) return;
         const t = actx.currentTime;
         master.gain.cancelScheduledValues(t);
-        master.gain.linearRampToValueAtTime(0.42, t + 0.12);
+        master.gain.linearRampToValueAtTime(MASTER_GAIN, t + 0.12);
       }
 
       function playStep(step, stageIdx) {
@@ -251,9 +252,9 @@
           playKick(step % 8 === 0 ? 1 : 0.82);
           playBass(stageIdx, Math.floor(step / 2));
         }
-        playHat(downbeat ? 0.045 : 0.035 + stageIdx * 0.008);
+        playHat(downbeat ? 0.08 : 0.06 + stageIdx * 0.012);
         if (stageIdx >= 2 && step % 4 === 2) playClap();
-        if (stageIdx >= 4 && !downbeat) playHat(0.07);
+        if (stageIdx >= 4 && !downbeat) playHat(0.12);
       }
 
       function playClashSting() {
@@ -406,7 +407,7 @@
         lastStepTime = 0;
         if (master && actx) {
           master.gain.cancelScheduledValues(actx.currentTime);
-          master.gain.value = 0.42;
+          master.gain.value = MASTER_GAIN;
         }
         document.body.classList.remove("sudden", "beat");
       }
