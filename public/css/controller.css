@@ -1,5 +1,3 @@
-/* Controller screen — phone layout */
-
 html,
 body {
   margin: 0;
@@ -93,7 +91,6 @@ body {
   letter-spacing: 2px;
 }
 
-/* Screen States */
 .screen.lobby {
   background: var(--color-bg-controller);
 }
@@ -102,6 +99,7 @@ body {
   background: var(--orb-color);
   box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.25);
 }
+
 .screen.lobby.ready .status,
 .screen.lobby.ready .sub {
   color: #041016;
@@ -112,6 +110,7 @@ body {
   background: var(--orb-color);
   box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.2);
 }
+
 .screen.live .status,
 .screen.live .sub {
   color: #041016;
@@ -122,6 +121,7 @@ body {
   background: #140008;
   box-shadow: inset 0 0 50px rgba(255, 0, 60, 0.2);
 }
+
 .screen.dead .status {
   color: var(--color-danger);
   text-shadow: var(--glow-red);
@@ -132,6 +132,7 @@ body {
   box-shadow: inset 0 0 90px var(--orb-color);
   opacity: 0.92;
 }
+
 .screen.ghost .status,
 .screen.ghost .sub {
   color: var(--orb-color);
@@ -142,6 +143,7 @@ body {
   background: var(--color-gold);
   box-shadow: inset 0 0 90px rgba(255, 255, 255, 0.35);
 }
+
 .screen.winner .status,
 .screen.winner .sub {
   color: #1a1400;
@@ -156,6 +158,7 @@ body {
   background: var(--color-bg-freeze);
   animation: electric-pulse 0.15s infinite alternate;
 }
+
 .screen.freeze .status {
   color: var(--neon-purple);
   text-shadow: var(--glow-purple);

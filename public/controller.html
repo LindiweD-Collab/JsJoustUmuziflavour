@@ -24,242 +24,231 @@
     <div id="sub" class="sub">Calibrating your phone</div>
   </div>
 </div>
-
+<script src="/js/socket.js"></script>
 <script>
-const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const ws = new WebSocket(`${wsProtocol}//${location.host}`);
-const screenEl = document.getElementById('screen');
-const statusEl = document.getElementById('status');
-const subEl = document.getElementById('sub');
-const errorEl = document.getElementById('error');
-let myId = null;
-let myColor = '#39ff14';
-let myTeam = null;
-let alive = true;
-let ghost = false;
-let ready = false;
-let isWinner = false;
-let ghostsWin = false;
-let gameState = 'lobby';
-let freezeActive = false;
-let suddenDeath = false;
-let lastGameState = 'lobby';
-let lastReadySent = null;
-let beatFlash = null;
-let wasAlive = true;
+const ws = connectSocket()
+const screenEl = document.getElementById("screen")
+const statusEl = document.getElementById("status")
+const subEl = document.getElementById("sub")
+const errorEl = document.getElementById("error")
+const GRAVITY_ALPHA = 0.85
+const prefilledRoom = new URLSearchParams(location.search).get("room")
 
-const params = new URLSearchParams(location.search);
-const prefilledRoom = params.get('room');
-if (prefilledRoom) {
-  document.getElementById('roomRow').classList.add('hidden');
+let myId = null
+let myColor = "#39ff14"
+let myTeam = null
+let alive = true
+let ghost = false
+let ready = false
+let isWinner = false
+let ghostsWin = false
+let gameState = "lobby"
+let freezeActive = false
+let suddenDeath = false
+let lastGameState = "lobby"
+let lastReadySent = null
+let beatFlash = null
+let wasAlive = true
+let motionListening = false
+let gravX = 0
+let gravY = 0
+let gravZ = 0
+let calSamples = []
+let restBaseline = 0.35
+let calibrated = false
+let lastGrav = { x: 0, y: 9.8, z: 0 }
+
+if (prefilledRoom) document.getElementById("roomRow").classList.add("hidden")
+
+const buzz = (pattern) => {
+  if (navigator.vibrate) navigator.vibrate(pattern)
 }
 
-function buzz(pattern) {
-  if (navigator.vibrate) navigator.vibrate(pattern);
+const setOrbColor = (color) => {
+  myColor = color || myColor
+  screenEl.style.setProperty("--orb-color", myColor)
 }
 
-function join() {
-  const room = prefilledRoom || document.getElementById('roomInput').value;
-  const name = document.getElementById('nameInput').value || 'Player';
-  if (!room) { errorEl.textContent = 'Enter a room code'; return; }
+const join = () => {
+  const room = prefilledRoom || document.getElementById("roomInput").value
+  const name = document.getElementById("nameInput").value || "Player"
+  if (!room) {
+    errorEl.textContent = "Enter a room code"
+    return
+  }
   if (ws.readyState !== WebSocket.OPEN) {
-    errorEl.textContent = 'Connecting... tap Join again';
-    return;
+    errorEl.textContent = "Connecting... tap Join again"
+    return
   }
-  requestMotionPermission();
-  ws.send(JSON.stringify({ type: 'join', room, name }));
+  requestMotionPermission()
+  ws.send(JSON.stringify({ type: "join", room, name }))
 }
 
-let motionListening = false;
-
-function requestMotionPermission() {
+const requestMotionPermission = () => {
   const startListening = () => {
-    if (motionListening) return;
-    motionListening = true;
-    window.addEventListener('devicemotion', onMotion);
-  };
-  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-    DeviceMotionEvent.requestPermission().then(state => {
-      if (state === 'granted') startListening();
-    }).catch(console.error);
+    if (motionListening) return
+    motionListening = true
+    window.addEventListener("devicemotion", onMotion)
+  }
+  if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+    DeviceMotionEvent.requestPermission().then((state) => {
+      if (state === "granted") startListening()
+    }).catch(console.error)
   } else {
-    startListening();
+    startListening()
   }
 }
 
-let gravX = 0;
-let gravY = 0;
-let gravZ = 0;
-const GRAVITY_ALPHA = 0.85;
-let calSamples = [];
-let restBaseline = 0.35;
-let calibrated = false;
-let lastGrav = { x: 0, y: 9.8, z: 0 };
+const vectorMag = (v) => Math.sqrt((v.x || 0) ** 2 + (v.y || 0) ** 2 + (v.z || 0) ** 2)
 
-function vectorMag(v) {
-  return Math.sqrt((v.x || 0) ** 2 + (v.y || 0) ** 2 + (v.z || 0) ** 2);
+const isUpright = () => Math.abs(lastGrav.y) > 6.5
+
+const sendReady = (next) => {
+  if (lastReadySent === next || ws.readyState !== WebSocket.OPEN) return
+  lastReadySent = next
+  ws.send(JSON.stringify({ type: "ready", ready: next }))
 }
 
-function isUpright() {
-  return Math.abs(lastGrav.y) > 6.5;
-}
-
-function sendReady(next) {
-  if (lastReadySent === next || ws.readyState !== WebSocket.OPEN) return;
-  lastReadySent = next;
-  ws.send(JSON.stringify({ type: 'ready', ready: next }));
-}
-
-function onMotion(e) {
-  const user = e.acceleration;
-  const raw = e.accelerationIncludingGravity;
-  let magUser = 0;
-  let magLinear = 0;
+const onMotion = (e) => {
+  const user = e.acceleration
+  const raw = e.accelerationIncludingGravity
+  let magUser = 0
+  let magLinear = 0
 
   if (raw && raw.x != null) {
-    lastGrav = { x: raw.x || 0, y: raw.y || 0, z: raw.z || 0 };
-    const ax = lastGrav.x;
-    const ay = lastGrav.y;
-    const az = lastGrav.z;
-    gravX = GRAVITY_ALPHA * gravX + (1 - GRAVITY_ALPHA) * ax;
-    gravY = GRAVITY_ALPHA * gravY + (1 - GRAVITY_ALPHA) * ay;
-    gravZ = GRAVITY_ALPHA * gravZ + (1 - GRAVITY_ALPHA) * az;
-    magLinear = Math.sqrt((ax - gravX) ** 2 + (ay - gravY) ** 2 + (az - gravZ) ** 2);
+    lastGrav = { x: raw.x || 0, y: raw.y || 0, z: raw.z || 0 }
+    gravX = GRAVITY_ALPHA * gravX + (1 - GRAVITY_ALPHA) * lastGrav.x
+    gravY = GRAVITY_ALPHA * gravY + (1 - GRAVITY_ALPHA) * lastGrav.y
+    gravZ = GRAVITY_ALPHA * gravZ + (1 - GRAVITY_ALPHA) * lastGrav.z
+    magLinear = Math.sqrt((lastGrav.x - gravX) ** 2 + (lastGrav.y - gravY) ** 2 + (lastGrav.z - gravZ) ** 2)
   }
-  if (user && user.x != null) magUser = vectorMag(user);
+  if (user && user.x != null) magUser = vectorMag(user)
 
-  const rawMag = Math.max(magUser, magLinear);
+  const rawMag = Math.max(magUser, magLinear)
   if (!calibrated) {
-    calSamples.push(rawMag);
+    calSamples.push(rawMag)
     if (calSamples.length >= 45) {
-      const sorted = calSamples.slice().sort((a, b) => a - b);
-      restBaseline = sorted[Math.floor(sorted.length * 0.8)] + 0.15;
-      calibrated = true;
-      render();
+      const sorted = calSamples.slice().sort((a, b) => a - b)
+      restBaseline = sorted[Math.floor(sorted.length * 0.8)] + 0.15
+      calibrated = true
+      render()
     }
-    return;
+    return
   }
 
-  const magnitude = Math.max(0, rawMag - restBaseline);
-  const still = magnitude < 0.9 && isUpright();
-  if (gameState === 'lobby') sendReady(still);
-
-  if (ws.readyState !== WebSocket.OPEN) return;
-  if (gameState === 'live') {
-    ws.send(JSON.stringify({ type: 'motion', magnitude }));
+  const magnitude = Math.max(0, rawMag - restBaseline)
+  if (gameState === "lobby") sendReady(magnitude < 0.9 && isUpright())
+  if (ws.readyState === WebSocket.OPEN && gameState === "live") {
+    ws.send(JSON.stringify({ type: "motion", magnitude }))
   }
 }
 
 ws.onmessage = (event) => {
-  const msg = JSON.parse(event.data);
-  if (msg.type === 'join_error') {
-    errorEl.textContent = msg.message;
+  const msg = JSON.parse(event.data)
+  if (msg.type === "join_error") errorEl.textContent = msg.message
+  if (msg.type === "joined") {
+    myId = msg.id
+    myTeam = msg.team
+    setOrbColor(msg.color)
+    document.getElementById("joinBox").classList.add("hidden")
+    document.getElementById("gameBox").classList.remove("hidden")
+    render()
   }
-  if (msg.type === 'joined') {
-    myId = msg.id;
-    myColor = msg.color || myColor;
-    myTeam = msg.team;
-    screenEl.style.setProperty('--orb-color', myColor);
-    document.getElementById('joinBox').classList.add('hidden');
-    document.getElementById('gameBox').classList.remove('hidden');
-    render();
-  }
-  if (msg.type === 'state') {
-    gameState = msg.gameState;
-    ghostsWin = !!msg.ghostsWin;
-    suddenDeath = !!msg.suddenDeath;
-    const me = msg.players.find(p => p.id === myId);
-    if (me) {
-      alive = me.alive;
-      ghost = !!me.ghost;
-      ready = !!me.ready;
-      myColor = me.color || myColor;
-      myTeam = me.team;
-      screenEl.style.setProperty('--orb-color', myColor);
-      isWinner = !!(msg.winner && msg.winner.id === myId) ||
-        !!(msg.winnerTeam && me.team === msg.winnerTeam && me.alive);
-      if (wasAlive && !alive) buzz([80, 40, 80, 40, 220]);
-      wasAlive = alive;
-    }
-    if (gameState !== 'lobby') {
-      lastReadySent = null;
-    }
-    render();
-  }
-  if (msg.type === 'tempo') {
-    freezeActive = msg.freezeActive;
-    suddenDeath = !!msg.suddenDeath;
-    if (msg.freezeActive && !screenEl.classList.contains('freeze')) {
-      buzz([40, 30, 80, 30, 140]);
-    }
-    if (msg.downbeat && gameState === 'live' && !msg.freezeActive) {
-      buzz(alive ? 22 : 12);
-      screenEl.classList.add('beat');
-      clearTimeout(beatFlash);
-      beatFlash = setTimeout(() => screenEl.classList.remove('beat'), 90);
-    }
-    render();
-  }
-  if (msg.type === 'fx' && msg.kind === 'clash') {
-    buzz([30, 20, 70]);
-  }
-};
+  if (msg.type === "state") handleState(msg)
+  if (msg.type === "tempo") handleTempo(msg)
+  if (msg.type === "fx" && msg.kind === "clash") buzz([30, 20, 70])
+}
 
-function render() {
-  screenEl.style.setProperty('--orb-color', myColor);
-  const pulsing = screenEl.classList.contains('beat');
-  if (gameState === 'lobby') {
+const handleState = (msg) => {
+  gameState = msg.gameState
+  ghostsWin = !!msg.ghostsWin
+  suddenDeath = !!msg.suddenDeath
+  const me = msg.players.find((p) => p.id === myId)
+  if (me) {
+    alive = me.alive
+    ghost = !!me.ghost
+    ready = !!me.ready
+    myTeam = me.team
+    setOrbColor(me.color)
+    isWinner = !!(msg.winner && msg.winner.id === myId) ||
+      !!(msg.winnerTeam && me.team === msg.winnerTeam && me.alive)
+    if (wasAlive && !alive) buzz([80, 40, 80, 40, 220])
+    wasAlive = alive
+  }
+  if (gameState !== "lobby") lastReadySent = null
+  render()
+}
+
+const handleTempo = (msg) => {
+  freezeActive = msg.freezeActive
+  suddenDeath = !!msg.suddenDeath
+  if (msg.freezeActive && !screenEl.classList.contains("freeze")) {
+    buzz([40, 30, 80, 30, 140])
+  }
+  if (msg.downbeat && gameState === "live" && !msg.freezeActive) {
+    buzz(alive ? 22 : 12)
+    screenEl.classList.add("beat")
+    clearTimeout(beatFlash)
+    beatFlash = setTimeout(() => screenEl.classList.remove("beat"), 90)
+  }
+  render()
+}
+
+const render = () => {
+  setOrbColor(myColor)
+  const pulsing = screenEl.classList.contains("beat")
+  if (gameState === "lobby") {
     if (!calibrated) {
-      statusEl.textContent = 'HOLD STILL';
-      subEl.textContent = 'Calibrating your sword';
-      screenEl.className = 'screen lobby';
+      statusEl.textContent = "HOLD STILL"
+      subEl.textContent = "Calibrating your sword"
+      screenEl.className = "screen lobby"
     } else if (ready) {
-      statusEl.textContent = 'READY';
-      subEl.textContent = myTeam ? `${myTeam} team` : 'Hold until the host starts';
-      screenEl.className = 'screen lobby ready';
+      statusEl.textContent = "READY"
+      subEl.textContent = myTeam ? `${myTeam} team` : "Hold until the host starts"
+      screenEl.className = "screen lobby ready"
     } else {
-      statusEl.textContent = 'RAISE IT';
-      subEl.textContent = 'Hold still and upright';
-      screenEl.className = 'screen lobby';
+      statusEl.textContent = "RAISE IT"
+      subEl.textContent = "Hold still and upright"
+      screenEl.className = "screen lobby"
     }
-  } else if (gameState === 'countdown') {
-    statusEl.textContent = 'JOUST';
-    subEl.textContent = '...';
-    screenEl.className = 'screen live';
-  } else if (gameState === 'victory') {
-    if (lastGameState !== 'victory') {
-      if ((ghostsWin && ghost) || isWinner) buzz([50, 40, 50, 40, 180]);
+  } else if (gameState === "countdown") {
+    statusEl.textContent = "JOUST"
+    subEl.textContent = "..."
+    screenEl.className = "screen live"
+  } else if (gameState === "victory") {
+    if (lastGameState !== "victory" && ((ghostsWin && ghost) || isWinner)) {
+      buzz([50, 40, 50, 40, 180])
     }
     if (ghostsWin && ghost) {
-      statusEl.textContent = 'GHOSTS WIN';
-      subEl.textContent = 'The hunt is over';
-      screenEl.className = 'screen ghost winner';
+      statusEl.textContent = "GHOSTS WIN"
+      subEl.textContent = "The hunt is over"
+      screenEl.className = "screen ghost winner"
     } else if (isWinner) {
-      statusEl.textContent = 'CHAMPION';
-      subEl.textContent = 'You remain';
-      screenEl.className = 'screen winner';
+      statusEl.textContent = "CHAMPION"
+      subEl.textContent = "You remain"
+      screenEl.className = "screen winner"
     } else {
-      statusEl.textContent = ghost ? 'GHOST' : 'OUT';
-      subEl.textContent = 'Next round incoming';
-      screenEl.className = ghost ? 'screen ghost' : 'screen dead';
+      statusEl.textContent = ghost ? "GHOST" : "OUT"
+      subEl.textContent = "Next round incoming"
+      screenEl.className = ghost ? "screen ghost" : "screen dead"
     }
-  } else if (gameState === 'live') {
+  } else if (gameState === "live") {
     if (ghost || !alive) {
-      statusEl.textContent = 'GHOST';
-      subEl.textContent = 'Hunt the living';
-      screenEl.className = 'screen ghost';
+      statusEl.textContent = "GHOST"
+      subEl.textContent = "Hunt the living"
+      screenEl.className = "screen ghost"
     } else if (freezeActive) {
-      statusEl.textContent = 'FREEZE';
-      subEl.textContent = "Don't move";
-      screenEl.className = 'screen freeze';
+      statusEl.textContent = "FREEZE"
+      subEl.textContent = "Don't move"
+      screenEl.className = "screen freeze"
     } else {
-      statusEl.textContent = suddenDeath ? 'DUEL' : '';
-      subEl.textContent = suddenDeath ? 'Sudden death' : '';
-      screenEl.className = 'screen live';
+      statusEl.textContent = suddenDeath ? "DUEL" : ""
+      subEl.textContent = suddenDeath ? "Sudden death" : ""
+      screenEl.className = "screen live"
     }
   }
-  if (pulsing) screenEl.classList.add('beat');
-  lastGameState = gameState;
+  if (pulsing) screenEl.classList.add("beat")
+  lastGameState = gameState
 }
 </script>
 </body>

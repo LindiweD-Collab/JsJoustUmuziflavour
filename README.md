@@ -68,8 +68,10 @@ A `render.yaml` is in the repo if you want to wire this as a Blueprint.
 
 ```
 server.js                 Game rules, rooms, WebSockets
-public/host.html          TV screen + music
+public/host.html          TV screen
 public/controller.html    Phone sword
+public/js/audio.js        Host Web Audio engine
+public/js/socket.js       ws / wss helper
 public/css/tokens.css     Shared colors (start here to restyle)
 public/css/host.css       Host layout
 public/css/controller.css Phone layout

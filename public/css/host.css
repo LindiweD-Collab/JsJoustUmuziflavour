@@ -1,14 +1,10 @@
-/* Host screen — TV / projector layout */
-
 body {
   margin: 0;
   background-color: var(--color-bg);
-  /* Cyberpunk grid lines */
-  background-image: 
+  background-image:
     linear-gradient(rgba(0, 243, 255, 0.04) 1px, transparent 1px),
     linear-gradient(90deg, rgba(0, 243, 255, 0.04) 1px, transparent 1px);
   background-size: 40px 40px;
-  
   color: var(--color-text);
   font-family: var(--font-sans);
   height: 100vh;
@@ -42,7 +38,7 @@ body {
   border: 3px solid var(--color-accent);
   box-shadow: var(--glow-cyan);
   padding: 4px;
-  background: #fff; /* Keep QR readable */
+  background: #fff;
 }
 
 .status {
@@ -219,8 +215,7 @@ body.sudden .status {
 
 body.freeze {
   background-color: var(--color-bg-freeze);
-  /* Tint grid purple during freeze */
-  background-image: 
+  background-image:
     linear-gradient(rgba(188, 19, 254, 0.08) 1px, transparent 1px),
     linear-gradient(90deg, rgba(188, 19, 254, 0.08) 1px, transparent 1px);
 }

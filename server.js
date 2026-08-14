@@ -6,6 +6,14 @@ const qrcode = require('qrcode');
 const os = require('os');
 
 const PORT = process.env.PORT || 3000;
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const MIME = {
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.css': 'text/css',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml'
+};
 
 const STAGES = [
   { bpm: 100, threshold: 5.5 },
@@ -25,6 +33,8 @@ const ORB_COLORS = [
   '#00f3ff', '#39ff14', '#ff2bd6', '#ff9f1c',
   '#3b82f6', '#facc15', '#ff003c', '#bc13fe',
 ];
+
+let rooms = {};
 
 function computeGameplay(elapsedMs, suddenDeath) {
   let stageIdx = Math.min(Math.floor(elapsedMs / STAGE_DURATION_MS), STAGES.length - 1);
@@ -56,6 +66,48 @@ function makeRoomCode() {
   return code;
 }
 
+function createRoom(hostWs) {
+  return {
+    players: {},
+    sockets: new Set([hostWs]),
+    gameState: 'lobby',
+    gameStartedAt: 0,
+    tempoTimer: null,
+    teamsEnabled: false,
+    suddenDeath: false,
+    winner: null,
+    winnerTeam: null,
+    ghostsWin: false,
+    spikes: [],
+    clashTimer: null,
+    nextBeatAt: 0,
+    beatIndex: 0
+  };
+}
+
+function stopRoomTimers(room) {
+  if (room.tempoTimer) clearInterval(room.tempoTimer);
+  if (room.clashTimer) clearTimeout(room.clashTimer);
+  room.tempoTimer = null;
+  room.clashTimer = null;
+}
+
+function resetRoundFlags(room) {
+  room.winner = null;
+  room.winnerTeam = null;
+  room.ghostsWin = false;
+  room.suddenDeath = false;
+  room.spikes = [];
+}
+
+function revivePlayers(room, ready = false) {
+  for (const p of Object.values(room.players)) {
+    p.alive = true;
+    p.ghost = false;
+    p.ready = ready;
+  }
+}
+
 function assignColor(room) {
   const used = new Set(Object.values(room.players).map(p => p.color));
   return ORB_COLORS.find(c => !used.has(c)) || ORB_COLORS[Object.keys(room.players).length % ORB_COLORS.length];
@@ -69,8 +121,7 @@ function assignTeam(room) {
 }
 
 function rebalanceTeams(room) {
-  const list = Object.values(room.players);
-  list.forEach((p, i) => {
+  Object.values(room.players).forEach((p, i) => {
     p.team = room.teamsEnabled ? (i % 2 === 0 ? 'red' : 'blue') : null;
   });
 }
@@ -87,8 +138,6 @@ function serializePlayer(id, p) {
     ready: !!p.ready
   };
 }
-
-let rooms = {};
 
 function broadcast(code, payload) {
   const room = rooms[code];
@@ -123,56 +172,49 @@ function finishVictory(code) {
   if (!room || room.gameState !== 'live') return;
   room.gameState = 'victory';
   room.suddenDeath = false;
-  if (room.tempoTimer) clearInterval(room.tempoTimer);
-  if (room.clashTimer) {
-    clearTimeout(room.clashTimer);
-    room.clashTimer = null;
-  }
+  stopRoomTimers(room);
   room.spikes = [];
   broadcastRoom(code);
+}
+
+function declareGhostsWin(code) {
+  const room = rooms[code];
+  room.ghostsWin = true;
+  room.winner = null;
+  room.winnerTeam = null;
+  finishVictory(code);
 }
 
 function checkWin(code) {
   const room = rooms[code];
   if (!room || room.gameState !== 'live') return;
-  const all = Object.entries(room.players);
-  if (all.length < 2) return;
+  if (Object.keys(room.players).length < 2) return;
   const living = livingEntries(room);
 
   if (room.teamsEnabled) {
-    if (living.length === 0) {
-      room.ghostsWin = true;
-      room.winner = null;
-      room.winnerTeam = null;
-      finishVictory(code);
-      return;
-    }
+    if (living.length === 0) return declareGhostsWin(code);
     const teams = new Set(living.map(([, p]) => p.team));
-    if (teams.size === 1) {
-      room.ghostsWin = false;
-      room.winnerTeam = living[0][1].team;
-      room.winner = { id: living[0][0], name: living[0][1].name, color: living[0][1].color, team: living[0][1].team };
-      living.forEach(([, p]) => { p.wins = (p.wins || 0) + 1; });
-      finishVictory(code);
-    }
-    return;
+    if (teams.size !== 1) return;
+    room.ghostsWin = false;
+    room.winnerTeam = living[0][1].team;
+    room.winner = {
+      id: living[0][0],
+      name: living[0][1].name,
+      color: living[0][1].color,
+      team: living[0][1].team
+    };
+    living.forEach(([, p]) => { p.wins = (p.wins || 0) + 1; });
+    return finishVictory(code);
   }
 
-  if (living.length === 0) {
-    room.ghostsWin = true;
-    room.winner = null;
-    room.winnerTeam = null;
-    finishVictory(code);
-    return;
-  }
-  if (living.length === 1) {
-    const [id, p] = living[0];
-    p.wins = (p.wins || 0) + 1;
-    room.ghostsWin = false;
-    room.winnerTeam = null;
-    room.winner = { id, name: p.name, color: p.color, team: p.team };
-    finishVictory(code);
-  }
+  if (living.length === 0) return declareGhostsWin(code);
+  if (living.length !== 1) return;
+  const [id, p] = living[0];
+  p.wins = (p.wins || 0) + 1;
+  room.ghostsWin = false;
+  room.winnerTeam = null;
+  room.winner = { id, name: p.name, color: p.color, team: p.team };
+  finishVictory(code);
 }
 
 function makeGhost(p) {
@@ -198,24 +240,26 @@ function resolveCluster(code) {
   const elapsed = Date.now() - room.gameStartedAt;
   const g = computeGameplay(elapsed, room.suddenDeath);
   const livingSpikes = unique.filter(s => room.players[s.id]?.alive);
-
-  let ghostedIds = [];
+  const ghostedIds = [];
   let clash = false;
 
   if (unique.length >= 2 && !g.freezeActive && livingSpikes.length > 0) {
     clash = true;
     livingSpikes.sort((a, b) => a.mag - b.mag);
-    const loser = room.players[livingSpikes[0].id];
-    if (makeGhost(loser)) ghostedIds.push(livingSpikes[0].id);
+    if (makeGhost(room.players[livingSpikes[0].id])) ghostedIds.push(livingSpikes[0].id);
   } else {
     for (const s of unique) {
-      const p = room.players[s.id];
-      if (makeGhost(p)) ghostedIds.push(s.id);
+      if (makeGhost(room.players[s.id])) ghostedIds.push(s.id);
     }
   }
 
   if (ghostedIds.length === 0) return;
-  broadcast(code, { type: 'fx', kind: clash ? 'clash' : 'ghosted', ids: unique.map(s => s.id), loserIds: ghostedIds });
+  broadcast(code, {
+    type: 'fx',
+    kind: clash ? 'clash' : 'ghosted',
+    ids: unique.map(s => s.id),
+    loserIds: ghostedIds
+  });
   broadcastRoom(code);
   checkWin(code);
 }
@@ -278,17 +322,29 @@ function getPublicOrigin(req) {
   const xfProto = req.headers['x-forwarded-proto'];
   const proto = (typeof xfProto === 'string' ? xfProto.split(',')[0].trim() : '') || 'http';
   const host = req.headers.host || `localhost:${PORT}`;
-
-  if (process.env.RENDER_EXTERNAL_URL) {
-    return process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '');
-  }
-  if (process.env.PUBLIC_URL) {
-    return process.env.PUBLIC_URL.replace(/\/$/, '');
-  }
-  if (proto === 'https') {
-    return `https://${host}`;
-  }
+  if (process.env.RENDER_EXTERNAL_URL) return process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '');
+  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
+  if (proto === 'https') return `https://${host}`;
   return `http://${getLocalIP()}:${PORT}`;
+}
+
+function servePublic(req, res) {
+  const urlPath = req.url === '/' ? '/host.html' : req.url.split('?')[0];
+  const filePath = path.normalize(path.join(PUBLIC_DIR, urlPath));
+  if (!filePath.startsWith(PUBLIC_DIR)) {
+    res.writeHead(403);
+    res.end('Forbidden');
+    return;
+  }
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'text/plain' });
+    res.end(data);
+  });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -301,22 +357,13 @@ const server = http.createServer(async (req, res) => {
   if (req.url.startsWith('/qr')) {
     const u = new URL(req.url, `http://${req.headers.host}`);
     const room = u.searchParams.get('room') || '';
-    const url = `${getPublicOrigin(req)}/controller.html?room=${room}`;
-    const png = await qrcode.toBuffer(url);
+    const png = await qrcode.toBuffer(`${getPublicOrigin(req)}/controller.html?room=${room}`);
     res.writeHead(200, { 'Content-Type': 'image/png' });
     res.end(png);
     return;
   }
 
-  let filePath = req.url === '/' ? '/host.html' : req.url.split('?')[0];
-  filePath = path.join(__dirname, 'public', filePath);
-  fs.readFile(filePath, (err, data) => {
-    if (err) { res.writeHead(404); res.end('Not found'); return; }
-    const ext = path.extname(filePath);
-    const type = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' }[ext] || 'text/plain';
-    res.writeHead(200, { 'Content-Type': type });
-    res.end(data);
-  });
+  servePublic(req, res);
 });
 
 const wss = new WebSocketServer({ server });
@@ -331,13 +378,7 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'create_room') {
       roomCode = makeRoomCode();
-      rooms[roomCode] = {
-        players: {}, sockets: new Set([ws]),
-        gameState: 'lobby', gameStartedAt: 0, tempoTimer: null,
-        teamsEnabled: false, suddenDeath: false,
-        winner: null, winnerTeam: null, ghostsWin: false,
-        spikes: [], clashTimer: null, nextBeatAt: 0, beatIndex: 0
-      };
+      rooms[roomCode] = createRoom(ws);
       ws.send(JSON.stringify({ type: 'room_created', code: roomCode }));
     }
 
@@ -350,14 +391,24 @@ wss.on('connection', (ws) => {
       }
       roomCode = code;
       playerId = Math.random().toString(36).slice(2, 9);
-      const color = assignColor(room);
-      const team = assignTeam(room);
       room.players[playerId] = {
         name: msg.name || `Player ${Object.keys(room.players).length + 1}`,
-        alive: true, ghost: false, ws, color, team, wins: 0, ready: false
+        alive: true,
+        ghost: false,
+        ws,
+        color: assignColor(room),
+        team: assignTeam(room),
+        wins: 0,
+        ready: false
       };
       room.sockets.add(ws);
-      ws.send(JSON.stringify({ type: 'joined', id: playerId, code, color, team }));
+      ws.send(JSON.stringify({
+        type: 'joined',
+        id: playerId,
+        code,
+        color: room.players[playerId].color,
+        team: room.players[playerId].team
+      }));
       broadcastRoom(roomCode);
     }
 
@@ -366,23 +417,19 @@ wss.on('connection', (ws) => {
       const p = room?.players[playerId];
       if (!p || room.gameState !== 'lobby') return;
       const next = !!msg.ready;
-      if (p.ready !== next) {
-        p.ready = next;
-        broadcastRoom(roomCode);
-      }
+      if (p.ready === next) return;
+      p.ready = next;
+      broadcastRoom(roomCode);
     }
 
     if (msg.type === 'motion' && roomCode && playerId) {
       const room = rooms[roomCode];
-      if (!room) return;
-      const p = room.players[playerId];
+      const p = room?.players[playerId];
       if (!p || room.gameState !== 'live') return;
       const elapsed = Date.now() - room.gameStartedAt;
       if (elapsed <= GRACE_MS) return;
       const g = computeGameplay(elapsed, room.suddenDeath);
-      if (msg.magnitude > g.threshold) {
-        noteSpike(roomCode, playerId, msg.magnitude);
-      }
+      if (msg.magnitude > g.threshold) noteSpike(roomCode, playerId, msg.magnitude);
     }
 
     if (msg.type === 'toggle_teams' && roomCode) {
@@ -397,18 +444,11 @@ wss.on('connection', (ws) => {
       const room = rooms[roomCode];
       if (!room || room.gameState !== 'lobby') return;
       room.gameState = 'countdown';
-      room.winner = null;
-      room.winnerTeam = null;
-      room.ghostsWin = false;
-      room.suddenDeath = false;
-      room.spikes = [];
+      resetRoundFlags(room);
       broadcastRoom(roomCode);
       setTimeout(() => {
         if (!rooms[roomCode]) return;
-        for (const p of Object.values(room.players)) {
-          p.alive = true;
-          p.ghost = false;
-        }
+        revivePlayers(room, false);
         room.gameState = 'live';
         room.gameStartedAt = Date.now();
         broadcastRoom(roomCode);
@@ -420,21 +460,9 @@ wss.on('connection', (ws) => {
       const room = rooms[roomCode];
       if (!room) return;
       room.gameState = 'lobby';
-      room.suddenDeath = false;
-      room.winner = null;
-      room.winnerTeam = null;
-      room.ghostsWin = false;
-      room.spikes = [];
-      if (room.tempoTimer) clearInterval(room.tempoTimer);
-      if (room.clashTimer) {
-        clearTimeout(room.clashTimer);
-        room.clashTimer = null;
-      }
-      for (const p of Object.values(room.players)) {
-        p.alive = true;
-        p.ghost = false;
-        p.ready = false;
-      }
+      resetRoundFlags(room);
+      stopRoomTimers(room);
+      revivePlayers(room, false);
       broadcastRoom(roomCode);
     }
   });
@@ -449,8 +477,7 @@ wss.on('connection', (ws) => {
       if (room.gameState === 'live') checkWin(roomCode);
     }
     if (room.sockets.size === 0) {
-      if (room.tempoTimer) clearInterval(room.tempoTimer);
-      if (room.clashTimer) clearTimeout(room.clashTimer);
+      stopRoomTimers(room);
       delete rooms[roomCode];
     }
   });

@@ -24,394 +24,134 @@
     <div class="actions">
       <button class="btn" id="startBtn" onclick="startGame()">Start Game</button>
       <button class="btn btn-secondary" id="teamsBtn" onclick="toggleTeams()">Teams: Off</button>
-      <button class="btn btn-secondary" id="resetBtn" onclick="resetGame()">Play Again</button>
+      <button class="btn btn-secondary" onclick="resetGame()">Play Again</button>
     </div>
-
+    <script src="/js/socket.js"></script>
+    <script src="/js/audio.js"></script>
     <script>
-      const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${wsProtocol}//${location.host}`);
-      const playersEl = document.getElementById("players");
-      const statusEl = document.getElementById("status");
-      const tempoEl = document.getElementById("tempoInfo");
-      const codeEl = document.getElementById("code");
-      const qrEl = document.getElementById("qr");
-      let roomCode = null;
-      let lastGameState = "lobby";
-      let beatFlash = null;
-      const lobbyMeta = document.getElementById("lobbyMeta");
-      const victoryEl = document.getElementById("victory");
-      const victoryTitle = document.getElementById("victoryTitle");
-      const victorySub = document.getElementById("victorySub");
-      const teamsBtn = document.getElementById("teamsBtn");
-      const startBtn = document.getElementById("startBtn");
-      const resetBtn = document.getElementById("resetBtn");
+      const ws = connectSocket()
+      const playersEl = document.getElementById("players")
+      const statusEl = document.getElementById("status")
+      const tempoEl = document.getElementById("tempoInfo")
+      const codeEl = document.getElementById("code")
+      const qrEl = document.getElementById("qr")
+      const lobbyMeta = document.getElementById("lobbyMeta")
+      const victoryEl = document.getElementById("victory")
+      const victoryTitle = document.getElementById("victoryTitle")
+      const victorySub = document.getElementById("victorySub")
+      const teamsBtn = document.getElementById("teamsBtn")
+      const startBtn = document.getElementById("startBtn")
+      let lastGameState = "lobby"
+      let beatFlash = null
+      let wasFreezing = false
 
-      // --- Audio setup (Web Audio API, no external files needed) ---
-      let actx = null;
-      let master = null;
-      let noiseBuffer = null;
-      let padOsc = null;
-      let padFilter = null;
-      let padGain = null;
-      let lastStepTime = 0;
-      let stepCount = 0;
-      let currentBpm = 100;
-      let currentStage = 0;
-      let wasFreezing = false;
-      const BASS_NOTES = [55, 55, 65.41, 55, 73.42, 55, 82.41, 65.41];
-      const PAD_NOTES = [55, 61.74, 73.42, 82.41, 98];
-      const MASTER_GAIN = 1;
-
-      function ensureAudio() {
-        if (!actx) {
-          actx = new (window.AudioContext || window.webkitAudioContext)();
-          master = actx.createGain();
-          master.gain.value = MASTER_GAIN;
-          const comp = actx.createDynamicsCompressor();
-          comp.threshold.value = -8;
-          comp.knee.value = 8;
-          comp.ratio.value = 2.5;
-          master.connect(comp).connect(actx.destination);
-        }
-        if (actx.state === "suspended") actx.resume();
-      }
-
-      function getNoiseBuffer() {
-        if (noiseBuffer) return noiseBuffer;
-        const length = Math.floor(actx.sampleRate * 0.4);
-        noiseBuffer = actx.createBuffer(1, length, actx.sampleRate);
-        const data = noiseBuffer.getChannelData(0);
-        for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
-        return noiseBuffer;
-      }
-
-      function startPad() {
-        if (padOsc || !actx) return;
-        padOsc = actx.createOscillator();
-        padOsc.type = "sawtooth";
-        padOsc.frequency.value = PAD_NOTES[0];
-        padFilter = actx.createBiquadFilter();
-        padFilter.type = "lowpass";
-        padFilter.frequency.value = 380;
-        padFilter.Q.value = 6;
-        padGain = actx.createGain();
-        padGain.gain.value = 0.14;
-        padOsc.connect(padFilter).connect(padGain).connect(master);
-        padOsc.start();
-      }
-
-      function updatePad(stageIdx, freezeActive) {
-        if (!padOsc) startPad();
-        if (!padOsc) return;
-        const t = actx.currentTime;
-        padOsc.frequency.linearRampToValueAtTime(
-          PAD_NOTES[stageIdx] || 98,
-          t + 0.18,
-        );
-        padFilter.frequency.linearRampToValueAtTime(
-          380 + stageIdx * 420,
-          t + 0.18,
-        );
-        padGain.gain.cancelScheduledValues(t);
-        padGain.gain.linearRampToValueAtTime(
-          freezeActive ? 0.001 : 0.14 + stageIdx * 0.02,
-          t + 0.06,
-        );
-      }
-
-      function stopPad() {
-        if (!padOsc) return;
-        try {
-          padOsc.stop();
-        } catch (err) {}
-        padOsc = null;
-        padFilter = null;
-        padGain = null;
-      }
-
-      function playKick(gain = 0.9) {
-        const t = actx.currentTime;
-        const osc = actx.createOscillator();
-        const g = actx.createGain();
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(150, t);
-        osc.frequency.exponentialRampToValueAtTime(38, t + 0.14);
-        g.gain.setValueAtTime(gain, t);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-        osc.connect(g).connect(master);
-        osc.start(t);
-        osc.stop(t + 0.24);
-      }
-
-      function playHat(gain = 0.05) {
-        const t = actx.currentTime;
-        const src = actx.createBufferSource();
-        src.buffer = getNoiseBuffer();
-        const hp = actx.createBiquadFilter();
-        hp.type = "highpass";
-        hp.frequency.value = 7000;
-        const g = actx.createGain();
-        g.gain.setValueAtTime(gain, t);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
-        src.connect(hp).connect(g).connect(master);
-        src.start(t);
-        src.stop(t + 0.06);
-      }
-
-      function playClap() {
-        const t = actx.currentTime;
-        const src = actx.createBufferSource();
-        src.buffer = getNoiseBuffer();
-        const bp = actx.createBiquadFilter();
-        bp.type = "bandpass";
-        bp.frequency.value = 1400;
-        const g = actx.createGain();
-        g.gain.setValueAtTime(0.18, t);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
-        src.connect(bp).connect(g).connect(master);
-        src.start(t);
-        src.stop(t + 0.18);
-      }
-
-      function playBass(stageIdx, step) {
-        const t = actx.currentTime;
-        const osc = actx.createOscillator();
-        const filter = actx.createBiquadFilter();
-        const g = actx.createGain();
-        osc.type = "square";
-        osc.frequency.value = BASS_NOTES[step % BASS_NOTES.length];
-        filter.type = "lowpass";
-        filter.frequency.value = 220 + stageIdx * 160;
-        g.gain.setValueAtTime(0.2, t);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-        osc.connect(filter).connect(g).connect(master);
-        osc.start(t);
-        osc.stop(t + 0.22);
-      }
-
-      function playCountdown() {
-        [0, 1, 2].forEach((i) => {
-          const t = actx.currentTime + i;
-          const osc = actx.createOscillator();
-          const g = actx.createGain();
-          osc.type = "triangle";
-          osc.frequency.value = i === 2 ? 880 : 523.25;
-          g.gain.setValueAtTime(0.001, t);
-          g.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
-          g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
-          osc.connect(g).connect(master);
-          osc.start(t);
-          osc.stop(t + 0.34);
-        });
-      }
-
-      function playFreezeSting() {
-        const t = actx.currentTime;
-        if (master) {
-          master.gain.cancelScheduledValues(t);
-          master.gain.setValueAtTime(master.gain.value, t);
-          master.gain.linearRampToValueAtTime(0.22, t + 0.04);
-        }
-        const src = actx.createBufferSource();
-        src.buffer = getNoiseBuffer();
-        const bp = actx.createBiquadFilter();
-        bp.type = "bandpass";
-        bp.Q.value = 4;
-        bp.frequency.setValueAtTime(1200, t);
-        bp.frequency.exponentialRampToValueAtTime(180, t + 0.55);
-        const ng = actx.createGain();
-        ng.gain.setValueAtTime(0.28, t);
-        ng.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
-        src.connect(bp).connect(ng).connect(actx.destination);
-        src.start(t);
-        src.stop(t + 0.7);
-        [196, 207.65, 311.13, 466.16].forEach((freq) => {
-          const osc = actx.createOscillator();
-          const g = actx.createGain();
-          osc.type = "sawtooth";
-          osc.frequency.setValueAtTime(freq, t);
-          osc.frequency.exponentialRampToValueAtTime(freq * 0.45, t + 0.85);
-          g.gain.setValueAtTime(0.09, t);
-          g.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
-          osc.connect(g).connect(actx.destination);
-          osc.start(t);
-          osc.stop(t + 0.92);
-        });
-      }
-
-      function releaseFreeze() {
-        if (!master) return;
-        const t = actx.currentTime;
-        master.gain.cancelScheduledValues(t);
-        master.gain.linearRampToValueAtTime(MASTER_GAIN, t + 0.12);
-      }
-
-      function playStep(step, stageIdx) {
-        const downbeat = step % 2 === 0;
-        if (downbeat) {
-          playKick(step % 8 === 0 ? 1 : 0.82);
-          playBass(stageIdx, Math.floor(step / 2));
-        }
-        playHat(downbeat ? 0.08 : 0.06 + stageIdx * 0.012);
-        if (stageIdx >= 2 && step % 4 === 2) playClap();
-        if (stageIdx >= 4 && !downbeat) playHat(0.12);
-      }
-
-      function playClashSting() {
-        if (!actx) return;
-        const t = actx.currentTime;
-        [330, 392].forEach((freq, i) => {
-          const osc = actx.createOscillator();
-          const g = actx.createGain();
-          osc.type = "square";
-          osc.frequency.value = freq;
-          g.gain.setValueAtTime(0.12, t + i * 0.04);
-          g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-          osc.connect(g).connect(master);
-          osc.start(t);
-          osc.stop(t + 0.2);
-        });
-      }
-
-      function playVictoryFanfare() {
-        ensureAudio();
-        [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
-          const t = actx.currentTime + i * 0.13;
-          const osc = actx.createOscillator();
-          const g = actx.createGain();
-          osc.type = "triangle";
-          osc.frequency.value = freq;
-          g.gain.setValueAtTime(0.001, t);
-          g.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
-          g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
-          osc.connect(g).connect(master);
-          osc.start(t);
-          osc.stop(t + 0.48);
-        });
-      }
-
-      ws.onopen = () => ws.send(JSON.stringify({ type: "create_room" }));
+      ws.onopen = () => ws.send(JSON.stringify({ type: "create_room" }))
 
       ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
+        const msg = JSON.parse(event.data)
         if (msg.type === "room_created") {
-          roomCode = msg.code;
-          codeEl.textContent = roomCode;
-          qrEl.src = `/qr?room=${roomCode}`;
+          codeEl.textContent = msg.code
+          qrEl.src = `/qr?room=${msg.code}`
         }
-        if (msg.type === "state") render(msg);
-        if (msg.type === "fx" && msg.kind === "clash") playClashSting();
-        if (msg.type === "tempo") {
-          currentBpm = msg.bpm;
-          currentStage = msg.stageIdx;
-          if (actx) updatePad(msg.stageIdx, msg.freezeActive);
-          tempoEl.textContent = msg.suddenDeath
-            ? `${msg.bpm} BPM — SUDDEN DEATH`
-            : `${msg.bpm} BPM — stage ${msg.stageIdx + 1}`;
-          document.body.classList.toggle("sudden", !!msg.suddenDeath);
-          if (msg.freezeActive && !wasFreezing) {
-            playFreezeSting();
-            document.body.classList.add("freeze");
-            statusEl.textContent = "FREEZE!";
-          } else if (!msg.freezeActive && wasFreezing) {
-            releaseFreeze();
-            document.body.classList.remove("freeze");
-          }
-          wasFreezing = msg.freezeActive;
-          if (msg.beat && actx && !msg.freezeActive) {
-            playStep(stepCount, msg.stageIdx);
-            stepCount += 1;
-            document.body.classList.add("beat");
-            clearTimeout(beatFlash);
-            beatFlash = setTimeout(() => document.body.classList.remove("beat"), 90);
-          }
-        }
-      };
+        if (msg.type === "state") render(msg)
+        if (msg.type === "fx" && msg.kind === "clash") JoustAudio.playClashSting()
+        if (msg.type === "tempo") handleTempo(msg)
+      }
 
-      function render(msg) {
-        const readyCount = msg.players.filter((p) => p.ready).length;
+      const handleTempo = (msg) => {
+        if (JoustAudio.isReady()) JoustAudio.updatePad(msg.stageIdx, msg.freezeActive)
+        tempoEl.textContent = msg.suddenDeath
+          ? `${msg.bpm} BPM — SUDDEN DEATH`
+          : `${msg.bpm} BPM — stage ${msg.stageIdx + 1}`
+        document.body.classList.toggle("sudden", !!msg.suddenDeath)
+        if (msg.freezeActive && !wasFreezing) {
+          JoustAudio.playFreezeSting()
+          document.body.classList.add("freeze")
+          statusEl.textContent = "FREEZE!"
+        } else if (!msg.freezeActive && wasFreezing) {
+          JoustAudio.releaseFreeze()
+          document.body.classList.remove("freeze")
+        }
+        wasFreezing = msg.freezeActive
+        if (msg.beat && JoustAudio.isReady() && !msg.freezeActive) {
+          JoustAudio.playStep(msg.stageIdx)
+          document.body.classList.add("beat")
+          clearTimeout(beatFlash)
+          beatFlash = setTimeout(() => document.body.classList.remove("beat"), 90)
+        }
+      }
+
+      const render = (msg) => {
+        const readyCount = msg.players.filter((p) => p.ready).length
         playersEl.innerHTML = msg.players
           .map((p) => {
-            const state = p.alive ? "alive" : "ghost";
-            const ready = p.ready && msg.gameState === "lobby" ? "ready" : "";
-            const team = p.team ? `team-${p.team}` : "";
-            const win = msg.winner && msg.winner.id === p.id && msg.gameState === "victory" ? "winner" : "";
+            const state = p.alive ? "alive" : "ghost"
+            const ready = p.ready && msg.gameState === "lobby" ? "ready" : ""
+            const team = p.team ? `team-${p.team}` : ""
+            const win = msg.winner && msg.winner.id === p.id && msg.gameState === "victory" ? "winner" : ""
             return `<div class="orb ${state} ${ready} ${team} ${win}" style="--orb:${p.color}">
               <span class="orb-name">${p.name}</span>
               <span class="orb-wins">${p.wins || 0} win${p.wins === 1 ? "" : "s"}</span>
-            </div>`;
+            </div>`
           })
-          .join("");
+          .join("")
 
-        teamsBtn.textContent = msg.teamsEnabled ? "Teams: On" : "Teams: Off";
-        lobbyMeta.classList.toggle("hidden", msg.gameState !== "lobby");
-        teamsBtn.classList.toggle("hidden", msg.gameState !== "lobby");
-        startBtn.classList.toggle("hidden", msg.gameState !== "lobby");
-        victoryEl.classList.toggle("hidden", msg.gameState !== "victory");
+        teamsBtn.textContent = msg.teamsEnabled ? "Teams: On" : "Teams: Off"
+        lobbyMeta.classList.toggle("hidden", msg.gameState !== "lobby")
+        teamsBtn.classList.toggle("hidden", msg.gameState !== "lobby")
+        startBtn.classList.toggle("hidden", msg.gameState !== "lobby")
+        victoryEl.classList.toggle("hidden", msg.gameState !== "victory")
 
         if (msg.gameState === "victory" && lastGameState !== "victory") {
-          stopPad();
-          playVictoryFanfare();
+          JoustAudio.stopPad()
+          JoustAudio.playVictoryFanfare()
         }
-        lastGameState = msg.gameState;
-        document.body.dataset.phase = msg.gameState;
+        lastGameState = msg.gameState
+        document.body.dataset.phase = msg.gameState
 
         if (msg.gameState === "lobby") {
-          const n = msg.players.length;
+          const n = msg.players.length
           statusEl.textContent = n
             ? `${readyCount}/${n} ready — hold phones still and upright`
-            : "Scan to join";
-          tempoEl.textContent = "";
-          document.body.classList.remove("freeze", "sudden", "beat");
+            : "Scan to join"
+          tempoEl.textContent = ""
+          document.body.classList.remove("freeze", "sudden", "beat")
         } else if (msg.gameState === "countdown") {
-          statusEl.textContent = "Raise your swords";
+          statusEl.textContent = "Raise your swords"
         } else if (msg.gameState === "victory") {
           if (msg.ghostsWin) {
-            victoryTitle.textContent = "GHOSTS WIN";
-            victorySub.textContent = "The living fell";
+            victoryTitle.textContent = "GHOSTS WIN"
+            victorySub.textContent = "The living fell"
           } else if (msg.winnerTeam) {
-            victoryTitle.textContent = `${msg.winnerTeam} team wins`;
-            victorySub.textContent = "Play again?";
+            victoryTitle.textContent = `${msg.winnerTeam} team wins`
+            victorySub.textContent = "Play again?"
           } else {
-            victoryTitle.textContent = `${msg.winner?.name || "Nobody"} wins`;
-            victorySub.textContent = "Champion of the room";
+            victoryTitle.textContent = `${msg.winner?.name || "Nobody"} wins`
+            victorySub.textContent = "Champion of the room"
           }
-          statusEl.textContent = "";
-          tempoEl.textContent = "";
+          statusEl.textContent = ""
+          tempoEl.textContent = ""
         } else if (msg.gameState === "live" && !wasFreezing) {
-          const aliveCount = msg.players.filter((p) => p.alive).length;
-          statusEl.textContent = msg.suddenDeath
-            ? "Sudden death"
-            : `${aliveCount} standing`;
+          const aliveCount = msg.players.filter((p) => p.alive).length
+          statusEl.textContent = msg.suddenDeath ? "Sudden death" : `${aliveCount} standing`
         }
       }
 
-      function toggleTeams() {
-        ws.send(JSON.stringify({ type: "toggle_teams" }));
+      const toggleTeams = () => ws.send(JSON.stringify({ type: "toggle_teams" }))
+
+      const startGame = () => {
+        JoustAudio.ensure()
+        JoustAudio.playCountdown()
+        JoustAudio.resetGroove()
+        ws.send(JSON.stringify({ type: "start_game" }))
       }
 
-      function startGame() {
-        ensureAudio();
-        playCountdown();
-        stepCount = 0;
-        lastStepTime = 0;
-        ws.send(JSON.stringify({ type: "start_game" }));
-      }
-
-      function resetGame() {
-        ws.send(JSON.stringify({ type: "reset_game" }));
-        document.body.classList.remove("freeze");
-        wasFreezing = false;
-        stopPad();
-        stepCount = 0;
-        lastStepTime = 0;
-        if (master && actx) {
-          master.gain.cancelScheduledValues(actx.currentTime);
-          master.gain.value = MASTER_GAIN;
-        }
-        document.body.classList.remove("sudden", "beat");
+      const resetGame = () => {
+        ws.send(JSON.stringify({ type: "reset_game" }))
+        wasFreezing = false
+        JoustAudio.resetGroove()
+        document.body.classList.remove("freeze", "sudden", "beat")
       }
     </script>
   </body>
 </html>
-
