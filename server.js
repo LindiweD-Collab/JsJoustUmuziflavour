@@ -98,11 +98,34 @@ function getLocalIP() {
   return 'localhost';
 }
 
+function getPublicOrigin(req) {
+  const xfProto = req.headers['x-forwarded-proto'];
+  const proto = (typeof xfProto === 'string' ? xfProto.split(',')[0].trim() : '') || 'http';
+  const host = req.headers.host || `localhost:${PORT}`;
+
+  if (process.env.RENDER_EXTERNAL_URL) {
+    return process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '');
+  }
+  if (process.env.PUBLIC_URL) {
+    return process.env.PUBLIC_URL.replace(/\/$/, '');
+  }
+  if (proto === 'https') {
+    return `https://${host}`;
+  }
+  return `http://${getLocalIP()}:${PORT}`;
+}
+
 const server = http.createServer(async (req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('ok');
+    return;
+  }
+
   if (req.url.startsWith('/qr')) {
     const u = new URL(req.url, `http://${req.headers.host}`);
     const room = u.searchParams.get('room') || '';
-    const url = `http://${getLocalIP()}:${PORT}/controller.html?room=${room}`;
+    const url = `${getPublicOrigin(req)}/controller.html?room=${room}`;
     const png = await qrcode.toBuffer(url);
     res.writeHead(200, { 'Content-Type': 'image/png' });
     res.end(png);
@@ -215,7 +238,7 @@ wss.on('connection', (ws) => {
   });
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`JS Joust running at http://localhost:${PORT}`);
   console.log(`Host screen: http://localhost:${PORT}/host.html`);
   console.log(`Local IP for QR/join links: ${getLocalIP()}`);

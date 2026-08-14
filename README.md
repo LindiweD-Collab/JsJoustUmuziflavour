@@ -10,6 +10,15 @@ node server.js
 - **Players**: scan the QR code with their phones (same WiFi network). The room code is baked into the QR link, so they just tap Join.
   - No QR reader handy? Players can go to `http://<host-ip>:3000/controller.html`, type in the 4-character room code shown on the host screen, and enter a name.
 
+## Deploy on Render
+Create a **Web Service** (not a static site) from this repo. Render provides HTTPS automatically.
+
+- Build: `npm install`
+- Start: `npm start`
+- Health check: `/health`
+
+On Render, the QR code points at `https://your-app.onrender.com/controller.html?room=XXXX`. Phones must use that HTTPS URL so `DeviceMotion` and `wss://` work. The free instance sleeps after idle time — the first load can take ~30s.
+
 ## What's implemented
 
 | Requirement | Where |
@@ -29,7 +38,7 @@ This was the missing piece last time — now:
 - Controller phones flash red and show "FREEZE!" the instant a freeze window starts, so players get a visual cue too (useful if they can't hear the host speaker well).
 
 ## Known limitations / next steps
-- **HTTPS required for iOS motion permission** in production — deploy behind ngrok/Caddy for a real TLS cert; `DeviceMotionEvent.requestPermission()` needs a secure context on iOS 13+.
+- **HTTPS required for phone motion** — browsers only expose `DeviceMotion` on a secure context (HTTPS or localhost). Deploy as a Render **Web Service** (not a static site). Render terminates TLS; the app still listens on HTTP internally and clients use `wss://` when the page is HTTPS.
 - **No reconnect handling** — a WiFi blip drops a player from the room permanently.
 - **Audio timing is client-scheduled, not sample-accurate** — fine for gameplay pacing, but it's not a tight DAW-style beat clock. If you want a driving/DJ-quality track under it, swap the Web Audio clicks for a looping audio file synced to the same `tempo` broadcast.
 - **Threshold values are untested against real phones** — different devices report different accelerometer scales; playtest and tune `STAGES` / `FREEZE_THRESHOLD` in `server.js`.
