@@ -1,0 +1,26 @@
+/* Shared design tokens — restyle the game from this file. */
+
+:root {
+  --font-sans: -apple-system, sans-serif;
+
+  --color-bg: #0a0a0a;
+  --color-bg-controller: #111;
+  --color-bg-surface: #1a1a1a;
+  --color-bg-freeze: #200;
+  --color-bg-live: #052e16;
+  --color-bg-dead: #450a0a;
+  --color-bg-freeze-pulse: #7f1d1d;
+
+  --color-text: #fff;
+  --color-text-muted: rgba(255, 255, 255, 0.7);
+  --color-text-faint: rgba(255, 255, 255, 0.5);
+
+  --color-accent: #4ade80;
+  --color-danger: #ef4444;
+  --color-border: #333;
+  --color-btn-secondary-bg: #333;
+
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+}

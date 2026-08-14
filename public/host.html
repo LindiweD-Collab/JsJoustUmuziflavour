@@ -3,35 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <title>JS Joust — Host</title>
-<style>
-  body { margin: 0; background: #0a0a0a; color: #fff; font-family: -apple-system, sans-serif;
-    height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-  h1 { font-size: 3vw; margin-bottom: 0; letter-spacing: 2px; }
-  #code { font-size: 5vw; font-weight: 900; letter-spacing: 8px; color: #4ade80; margin: 6px 0; }
-  #qr { margin: 10px 0; border-radius: 12px; }
-  #players { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; max-width: 80%; margin: 20px 0; }
-  .player { padding: 12px 20px; border-radius: 10px; background: #1a1a1a; font-size: 1.5vw; font-weight: 700;
-    border: 3px solid #333; transition: all 0.1s; }
-  .alive { border-color: #4ade80; }
-  .dead { border-color: #ef4444; opacity: 0.4; text-decoration: line-through; }
-  button { font-size: 1.3vw; padding: 12px 32px; border-radius: 12px; border: none;
-    background: #4ade80; font-weight: 700; margin: 6px; cursor: pointer; }
-  #status { font-size: 2vw; opacity: 0.7; margin-top: 6px; transition: color 0.1s; }
-  #tempoInfo { font-size: 1.1vw; opacity: 0.5; margin-top: 4px; }
-  body.freeze #status { color: #ef4444; }
-  body.freeze { background: #200; }
-</style>
+<link rel="stylesheet" href="/css/tokens.css">
+<link rel="stylesheet" href="/css/host.css">
 </head>
 <body>
-<h1>JS JOUST</h1>
-<div id="code">----</div>
-<img id="qr" width="180" height="180">
-<div id="status">Scan to join</div>
-<div id="tempoInfo"></div>
-<div id="players"></div>
-<div>
-  <button onclick="startGame()">Start Game</button>
-  <button onclick="resetGame()" style="background:#333;color:#fff;">Reset</button>
+<h1 class="title">JS JOUST</h1>
+<div id="code" class="room-code">----</div>
+<img id="qr" class="qr" width="180" height="180" alt="Join QR code">
+<div id="status" class="status">Scan to join</div>
+<div id="tempoInfo" class="tempo"></div>
+<div id="players" class="players"></div>
+<div class="actions">
+  <button class="btn" onclick="startGame()">Start Game</button>
+  <button class="btn btn-secondary" onclick="resetGame()">Reset</button>
 </div>
 
 <script>
